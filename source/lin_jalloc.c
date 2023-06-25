@@ -3,11 +3,10 @@
 //
 
 #include <errno.h>
-#include "lin_jalloc.h"
+#include "../include/jmem/lin_jalloc.h"
 #include <string.h>
-#include <malloc.h>
 #include <assert.h>
-#include <sys/unistd.h>
+#include <unistd.h>
 #ifndef _WIN32
 #include <sys/mman.h>
 #else
@@ -21,20 +20,19 @@ struct linear_jallocator_struct
     void* base;
     void* current;
     void* peek;
+    unsigned char memory[];
 };
 
 uint_fast64_t lin_jallocator_destroy(linear_jallocator* allocator)
 {
     linear_jallocator* this = (linear_jallocator*)allocator;
+    const uint_fast64_t ret_v = this->peek - this->base;
 #ifndef _WIN32
-    int res = munmap(this->base, this->max - this->base);
-    assert(res == 0);
+    munmap(this, sizeof(*this) + this->max - this->base);
 #else
-    WINBOOL res = VirtualFree(this->base, 0, MEM_RELEASE);
+    WINBOOL res = VirtualFree(this, 0, MEM_RELEASE);
     assert(res != 0);
 #endif
-    const uint_fast64_t ret_v = this->peek - this->base;
-    free(this);
     return ret_v;
 }
 
@@ -139,37 +137,36 @@ void* lin_jrealloc(linear_jallocator* allocator, void* ptr, uint_fast64_t new_si
     return NULL;
 }
 
+static uint64_t PAGE_SIZE = 0;
+
+static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
+{
+    uint_fast64_t excess = v & (PAGE_SIZE - 1); //  Works BC PAGE_SIZE is a multiple of two
+    if (excess)
+    {
+        v += PAGE_SIZE - excess;
+    }
+    return v;
+}
 linear_jallocator* lin_jallocator_create(uint_fast64_t total_size)
 {
-#ifndef _WIN32
-    uint64_t PAGE_SIZE = sysconf(_SC_PAGESIZE);
-#else
-    SYSTEM_INFO sys_info;
-    GetSystemInfo(&sys_info);
-    uint64_t PAGE_SIZE = sys_info.dwPageSize;
-#endif
-    linear_jallocator* this = malloc(sizeof(*this));
-    if (!this) return this;
-    uint64_t extra = (total_size % PAGE_SIZE);
-    if (extra)
+    if (!PAGE_SIZE)
     {
-        total_size += (PAGE_SIZE - extra);
+    #ifndef _WIN32
+        PAGE_SIZE = sysconf(_SC_PAGESIZE);
+    #else
+        SYSTEM_INFO sys_info;
+        GetSystemInfo(&sys_info);
+        uint64_t PAGE_SIZE = sys_info.dwPageSize;
+    #endif
     }
-#ifndef _WIN32
-    void* mem = mmap(NULL, total_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-    if (mem == MAP_FAILED)
-#else
-    void* mem = VirtualAlloc(NULL, total_size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-    if (mem == NULL)
-#endif
-    {
-        free(this);
-        return NULL;
-    }
-    this->base = mem;
-    this->current = mem;
-    this->peek = mem;
-    this->max = mem + total_size;
+    total_size = round_to_nearest_page_up(total_size);
+    linear_jallocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(linear_jallocator) + total_size), PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+    if (this == MAP_FAILED) return NULL;
+    this->base = (void*)((uintptr_t)this + sizeof(*this));
+    this->current = (void*)((uintptr_t)this + sizeof(*this));
+    this->peek = (void*)((uintptr_t)this + sizeof(*this));
+    this->max = (void*)((uintptr_t)this + sizeof(*this) + total_size);
 
     return this;
 }

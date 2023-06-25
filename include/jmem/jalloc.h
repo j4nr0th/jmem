@@ -2,13 +2,15 @@
 // Created by jan on 27.4.2023.
 //
 
-#ifndef RMOD_JALLOC_H
-#define RMOD_JALLOC_H
+#ifndef JMEM_JALLOC_H
+#define JMEM_JALLOC_H
+#ifndef _WIN32
+#define _GNU_SOURCE
+#endif
 #include <stdint.h>
-
 typedef struct jallocator_struct jallocator;
 
-jallocator* jallocator_create(uint_fast64_t pool_size, uint_fast64_t malloc_limit, uint_fast64_t initial_pool_count);
+jallocator* jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count);
 
 int jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t* i_block);
 
@@ -28,4 +30,4 @@ void jallocator_statistics(
 
 int jallocator_set_debug_trap(jallocator* allocator, uint32_t index);
 
-#endif //RMOD_JALLOC_H
+#endif //JMEM_JALLOC_H

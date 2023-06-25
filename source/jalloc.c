@@ -2,27 +2,27 @@
 // Created by jan on 27.4.2023.
 //
 
-#include "jalloc.h"
-#include <malloc.h>
-#include <assert.h>
+#include "../include/jmem/jalloc.h"
 #ifndef _WIN32
 #include <sys/mman.h>
+#include <unistd.h>
+#include <stddef.h>
+#include <assert.h>
+#include <string.h>
+
 #else
 #include <windows.h>
 #endif
-#include <unistd.h>
-#include <string.h>
 typedef struct mem_chunk_struct mem_chunk;
 struct mem_chunk_struct
 {
 #ifdef JALLOC_TRACKING
     uint_fast64_t size:48;
-    uint_fast64_t idx:14;
+    uint_fast64_t idx:13;
 #else
-    uint_fast64_t size:62;
+    uint_fast64_t size:63;
 #endif
     uint_fast64_t used:1;
-    uint_fast64_t malloced:1;
     mem_chunk* next;
     mem_chunk* prev;
 };
@@ -32,6 +32,7 @@ static_assert(offsetof(mem_chunk, next) == 8);
 typedef struct mem_pool_struct mem_pool;
 struct mem_pool_struct
 {
+    uint_fast64_t size;
     uint_fast64_t free;
     uint_fast64_t used;
     mem_chunk* largest;
@@ -57,41 +58,55 @@ struct jallocator_struct
     uint32_t trap_values[JALLOC_TRAP_COUNT];
 #endif
     mem_pool* pools;
-    uint_fast64_t malloc_limit;
+    uint_fast64_t pool_buffer_size;
 };
 
+static uint_fast64_t PAGE_SIZE = 0;
 
-jallocator* jallocator_create(uint_fast64_t pool_size, uint_fast64_t malloc_limit, uint_fast64_t initial_pool_count)
+static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
 {
-    jallocator* this = malloc(sizeof(*this));
-    if (!this)
+    uint_fast64_t excess = v & (PAGE_SIZE - 1); //  Works BC PAGE_SIZE is a multiple of two
+    if (excess)
     {
-        return this;
+        v += PAGE_SIZE - excess;
     }
-    *this = (jallocator){};
-    this->capacity = initial_pool_count < 32 ? 32 : initial_pool_count;
-    this->pools = calloc(this->capacity, sizeof(*this->pools));
-    if (!this->pools)
-    {
-        free(this);
-        return NULL;
-    }
+    return v;
+}
 
-    static long PG_SIZE = 0;
-    if (!PG_SIZE)
+jallocator* jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count)
+{
+    if (!PAGE_SIZE)
     {
 #ifndef _WIN32
-        PG_SIZE = sysconf(_SC_PAGESIZE);
+        PAGE_SIZE = sysconf(_SC_PAGESIZE);
 #else
         SYSTEM_INFO sys_info;
         GetSystemInfo(&sys_info);
         PG_SIZE = (long) sys_info.dwPageSize;
 #endif
+        //  Check that we have the page size
+        if (!PAGE_SIZE)
+        {
+            return NULL;
+        }
     }
-    assert(PG_SIZE != 0);
-    pool_size = PG_SIZE * (pool_size / PG_SIZE + ((pool_size % PG_SIZE) != 0)) ;
-    this->malloc_limit = malloc_limit;
-    this->pool_size = pool_size;
+    jallocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(*this)), PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+    if (this == MAP_FAILED)
+    {
+        return NULL;
+    }
+    *this = (jallocator){};
+    this->capacity = initial_pool_count < 32 ? 32 : initial_pool_count;
+    this->pool_buffer_size = round_to_nearest_page_up(this->capacity * sizeof(*this->pools));
+    this->capacity = this->pool_buffer_size / sizeof(*this->pools);
+    this->pools = mmap(0, this->pool_buffer_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+    if (!this->pools)
+    {
+        munmap(this, round_to_nearest_page_up(sizeof(*this)));
+        return NULL;
+    }
+
+    this->pool_size = round_to_nearest_page_up(pool_size);
     for (uint_fast32_t i = 0; i < initial_pool_count; ++i)
     {
         mem_pool* p = this->pools + i;
@@ -106,28 +121,26 @@ jallocator* jallocator_create(uint_fast64_t pool_size, uint_fast64_t malloc_limi
             for (uint_fast32_t j = 0; j < i; ++j)
             {
 #ifndef _WIN32
-                int r = munmap(this->pools[i].base, pool_size);
-                assert(r == 0);
+                munmap(this->pools[i].base, pool_size);
 #else
                 WINBOOL res = VirtualFree(this->pools[i].base, 0, MEM_RELEASE);
                 assert(res != 0);
 #endif
             }
-            free(this->pools);
-            free(this);
+            munmap(this->pools, this->pool_buffer_size);
+            munmap(this, round_to_nearest_page_up(sizeof(*this)));
             return NULL;
         }
-//        p->mem_size = pool_size;
+        p->size = this->pool_size;
         p->used = 0;
-        p->free = pool_size;
+        p->free = this->pool_size;
         mem_chunk* c = p->base;
         p->smallest = c;
         p->largest = c;
         c->used = 0;
-        c->malloced = 0;
         c->prev = NULL;
         c->next = NULL;
-        c->size = pool_size;
+        c->size = this->pool_size;
     }
     this->count = initial_pool_count;
 #ifdef JALLOC_TRACKING
@@ -146,17 +159,19 @@ void jallocator_destroy(jallocator* allocator)
     for (uint_fast32_t i = 0; i < allocator->count; ++i)
     {
 #ifndef _WIN32
-        int r = munmap(allocator->pools[i].base, allocator->pool_size);
-        assert(r == 0);
+        munmap(allocator->pools[i].base, allocator->pool_size);
 #else
         WINBOOL res = VirtualFree(allocator->pools[i].base, 0, MEM_RELEASE);
         assert(res != 0);
 #endif
     }
-    memset(allocator->pools, 0, sizeof(*allocator->pools) * allocator->count);
-    free(allocator->pools);
-    memset(allocator, 0, sizeof(*allocator));
-    free(allocator);
+    for (uint_fast64_t i = 0; i < allocator->count; ++i)
+    {
+        allocator->pools[i] = (mem_pool){};
+    }
+    munmap(allocator->pools, allocator->pool_buffer_size);
+    *allocator = (jallocator){};
+    munmap(allocator, round_to_nearest_page_up(sizeof(*allocator)));
 }
 
 static inline uint_fast64_t round_up_size(uint_fast64_t size)
@@ -239,7 +254,6 @@ static inline void remove_chunk_from_pool(mem_pool* pool, mem_chunk* chunk)
 static inline void insert_chunk_into_pool(mem_pool* pool, mem_chunk* chunk)
 {
 beginning_of_fn:
-    assert(chunk->malloced == 0);
     assert(chunk->used == 0);
     //  Check if pool has other chunks
     if (pool->free == 0)
@@ -337,26 +351,6 @@ void* jalloc(jallocator* allocator, uint_fast64_t size)
     //  Round up size to 8 bytes
     size = round_up_size(size);
 
-    //  Check if malloc should be used
-    if (size >= allocator->malloc_limit)
-    {
-        mem_chunk* chunk = malloc(size);
-        if (!chunk)
-        {
-            return NULL;
-        }
-        chunk->used = 1;
-        chunk->malloced = 1;
-        chunk->size = size;
-#ifdef JALLOC_TRACKING
-        if (allocator->max_allocated < chunk->size)
-        {
-            allocator->max_allocated = chunk->size;
-        }
-#endif
-        return &chunk->next;
-    }
-
     //  Check there's a pool that can support the allocation
     mem_pool* pool = find_supporting_pool(allocator, size);
     if (!pool)
@@ -364,28 +358,38 @@ void* jalloc(jallocator* allocator, uint_fast64_t size)
         //  Create a new pool
         if (allocator->count == allocator->capacity)
         {
-            uint_fast64_t new_capacity = allocator->capacity << 1;
-            mem_pool* new_ptr = realloc(allocator->pools, new_capacity * sizeof(*allocator->pools));
-            if (!new_ptr)
+            uint_fast64_t new_memory_size = allocator->pool_buffer_size + PAGE_SIZE;
+            mem_pool* new_ptr = mremap(allocator->pools, allocator->pool_buffer_size, new_memory_size, MREMAP_MAYMOVE);
+            if (new_ptr == MAP_FAILED)
             {
-                return NULL;
+                new_ptr = mmap(NULL, new_memory_size, PROT_WRITE|PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                if (new_ptr == MAP_FAILED)
+                {
+                    return NULL;
+                }
+                for (uint_fast64_t i = 0; i < allocator->count; ++i)
+                {
+                    new_ptr[i] = allocator->pools[i];
+                }
+                munmap(allocator->pools, allocator->pool_buffer_size);
             }
-            memset(new_ptr + allocator->count, 0, sizeof(*new_ptr) * (allocator->capacity - allocator->count));
+            memset((void*)((uintptr_t)new_ptr + allocator->pool_buffer_size), 0, PAGE_SIZE);
+            allocator->pool_buffer_size = new_memory_size;
             allocator->pools = new_ptr;
-            allocator->capacity = new_capacity;
         }
+
+        const uint_fast64_t pool_size = round_to_nearest_page_up(allocator->pool_size > size + sizeof(mem_chunk) ? allocator->pool_size : size + sizeof(mem_chunk));
 #ifndef _WIN32
-        mem_chunk* base_chunk = mmap(NULL, allocator->pool_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+        mem_chunk* base_chunk = mmap(NULL, pool_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
         if (base_chunk == MAP_FAILED)
 #else
-        mem_chunk* base_chunk = VirtualAlloc(NULL, allocator->pool_size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+        mem_chunk* base_chunk = VirtualAlloc(NULL, pool_size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
         if (base_chunk == NULL)
 #endif
         {
             return NULL;
         }
-        base_chunk->size = allocator->pool_size;
-        base_chunk->malloced = 0;
+        base_chunk->size = pool_size;
         base_chunk->used = 0;
         base_chunk->next = NULL;
         base_chunk->prev = NULL;
@@ -395,7 +399,8 @@ void* jalloc(jallocator* allocator, uint_fast64_t size)
                 .largest = base_chunk,
                 .smallest = base_chunk,
                 .used = 0,
-                .free = allocator->pool_size,
+                .free = pool_size,
+                .size = pool_size,
                 };
         pool = allocator->pools + allocator->count;
         allocator->pools[allocator->count++] = new_pool;
@@ -411,7 +416,6 @@ void* jalloc(jallocator* allocator, uint_fast64_t size)
     if (remaining >= sizeof(mem_chunk))
     {
         mem_chunk* new_chunk = ((void*)chunk) + size;
-        new_chunk->malloced = 0;
         new_chunk->used = 0;
         new_chunk->size = remaining;
         chunk->size = size;
@@ -466,80 +470,16 @@ void* jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
     //  Check if it came from a pool
     if (!pool)
     {
-        //  It did not come from a pool, so check if it was malloced (this will be a crash for an invalid pointer
-        if (chunk->malloced == 1)
-        {
-            //  was malloced, use realloc
-            mem_chunk* new_chunk = realloc(chunk, new_size);
-            if (!new_chunk)
-            {
-                return NULL;
-            }
-            new_chunk->malloced = 1;
-            new_chunk->used = 1;
-#ifdef JALLOC_TRACKING
-            allocator->current_allocated -= new_chunk->size;
-            allocator->current_allocated += new_size;
-            allocator->total_allocated += new_size > new_chunk->size ? new_size - new_chunk->size : 0;
-            if (allocator->current_allocated > allocator->max_allocated)
-            {
-                allocator->max_allocated = allocator->current_allocated;
-            }
-            if (new_size > allocator->biggest_allocation)
-            {
-                allocator->biggest_allocation = new_size;
-            }
-#endif
-            new_chunk->size = new_size;
-            return &new_chunk->next;
-        }
+        //  It did not come from a pool
         return NULL;
     }
 
-    assert(chunk->malloced == 0);
     //  Since this dereferences chunk, this can cause SIGSEGV
     if (new_size == chunk->size)
     {
         return ptr;
     }
 
-
-    //  Does its new size warrant the usage of malloc?
-    if (new_size > allocator->malloc_limit)
-    {
-        //  Allocate the new chunk
-        assert(new_size > chunk->size);
-        mem_chunk* new_chunk = malloc(new_size + offsetof(mem_chunk, next));
-        if (!new_chunk)
-        {
-            return NULL;
-        }
-        //  Write chunk information
-        new_chunk->size = new_size;
-        new_chunk->used = 1;
-        new_chunk->malloced = 1;
-        //  Copy data to new chunk from old location
-        memcpy(&new_chunk->next, ptr, new_size > chunk->size ? chunk->size : new_size);
-        //  Return the old chunk to its pool
-        chunk->used = 0;
-        insert_chunk_into_pool(pool, chunk);
-        //  Return new memory
-
-#ifdef JALLOC_TRACKING
-        allocator->current_allocated -= chunk->size;
-        allocator->current_allocated += new_size;
-        allocator->total_allocated += new_size > chunk->size ? new_size - chunk->size : 0;
-        if (allocator->current_allocated > allocator->max_allocated)
-        {
-            allocator->max_allocated = allocator->current_allocated;
-        }
-        if (new_size > allocator->biggest_allocation)
-        {
-            allocator->biggest_allocation = new_size;
-        }
-#endif
-        return &new_chunk->next;
-    }
 
     const uint_fast64_t old_size = chunk->size;
     //  Check if increasing or decreasing the chunk's size
@@ -586,7 +526,6 @@ void* jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
         chunk->size = new_size;
         new_chunk->size = remainder;
         new_chunk->used = 0;
-        new_chunk->malloced = 0;
         //  Put the split chunk into the pool
         insert_chunk_into_pool(pool, new_chunk);
     }
@@ -628,7 +567,6 @@ int jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t*
             VERIFICATION_CHECK(!current->prev || current->size >= current->prev->size);
             VERIFICATION_CHECK(!current->next || current->next->prev == current);
             VERIFICATION_CHECK(current->used == 0);
-            VERIFICATION_CHECK(current->malloced == 0);
             VERIFICATION_CHECK(current->size >= sizeof(mem_chunk));
             accounted_free_space += current->size;
         }
@@ -643,7 +581,6 @@ int jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t*
             VERIFICATION_CHECK(!current->next || current->size <= current->next->size);
             VERIFICATION_CHECK(!current->prev || current->prev->next == current);
             VERIFICATION_CHECK(current->used == 0);
-            VERIFICATION_CHECK(current->malloced == 0);
             VERIFICATION_CHECK(current->size >= sizeof(mem_chunk));
             accounted_free_space += current->size;
         }
@@ -656,7 +593,6 @@ int jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t*
         {
             mem_chunk* chunk = current;
             VERIFICATION_CHECK(chunk->size >= sizeof(mem_chunk));
-            VERIFICATION_CHECK(chunk->malloced == 0);
             VERIFICATION_CHECK(current < pool->base + allocator->pool_size);
             if (chunk->used)
             {
@@ -694,14 +630,8 @@ void jfree(jallocator* allocator, void* ptr)
 #endif
     if (!pool)
     {
-        //  This is either going to be a malloced chunk or a SIGSEGV
-        if (chunk->malloced)
-        {
-            free(chunk);
-        }
         return;
     }
-    assert(chunk->malloced == 0);
 
     //  Mark chunk as no longer used, then return it back to the pool
     chunk->used = 0;

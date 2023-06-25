@@ -2,8 +2,8 @@
 // Created by jan on 20.4.2023.
 //
 
-#ifndef RMOD_LIN_ALLOC_H
-#define RMOD_LIN_ALLOC_H
+#ifndef JMEM_LIN_ALLOC_H
+#define JMEM_LIN_ALLOC_H
 #include <stdint.h>
 
 //  Linear allocator
@@ -38,4 +38,4 @@ void lin_jalloc_set_current(linear_jallocator* allocator, void* ptr);
 
 uint_fast64_t lin_jallocator_get_size(const linear_jallocator* jallocator);
 
-#endif //RMOD_LIN_ALLOC_H
+#endif //JMEM_LIN_ALLOC_H
