@@ -14,3 +14,7 @@ add_test(NAME jalloc_test COMMAND jalloc_full_test)
 
 add_executable(lin_alloc_test source/tests/lin_alloc_test.c source/lin_jalloc.c include/jmem/lin_jalloc.h)
 add_test(NAME lin_alloc COMMAND lin_alloc_test)
+
+set(installable_libs jmem)
+install(TARGETS ${installable_libs} DESTINATION lib)
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/jmem" DESTINATION include)
