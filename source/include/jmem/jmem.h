@@ -4,6 +4,6 @@
 
 #ifndef JMEM_JMEM_H
 #define JMEM_JMEM_H
-#include "jalloc.h"
+#include "ill_jalloc.h"
 #include "lin_jalloc.h"
 #endif //JMEM_JMEM_H

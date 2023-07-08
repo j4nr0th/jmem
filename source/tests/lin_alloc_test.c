@@ -1,7 +1,7 @@
 //
 // Created by jan on 20.4.2023.
 //
-#include "../../include/jmem/lin_jalloc.h"
+#include "../include/jmem/lin_jalloc.h"
 #include <time.h>
 #include <string.h>
 #include <malloc.h>
@@ -13,7 +13,7 @@ typedef uint8_t u8;
 
 int main()
 {
-    linear_jallocator* allocator = lin_jallocator_create(1 << 20);
+    jallocator* allocator = lin_jallocator_create(1 << 20);
 
     clock_t total_base = 0, total_static = 0, total_comparison = 0;
     clock_t begin_base, begin_comparison, begin_static, end_base, end_comparison, end_static;

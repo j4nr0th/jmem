@@ -2,7 +2,7 @@
 // Created by jan on 27.4.2023.
 //
 
-#include "../include/jmem/jalloc.h"
+#include "include/jmem/ill_jalloc.h"
 #ifndef _WIN32
 #include <sys/mman.h>
 #include <unistd.h>
@@ -40,9 +40,15 @@ struct mem_pool_struct
     void* base;
 };
 
+/**
+ * @brief Opaque structure to store the state of allocator. Not thread safe.
+ */
+typedef struct ill_jallocator_struct ill_jallocator;
 
-struct jallocator_struct
+struct ill_jallocator_struct
 {
+    jallocator interface;
+
     uint_fast64_t pool_size;
     uint_fast64_t capacity;
     uint_fast64_t count;
@@ -56,12 +62,16 @@ struct jallocator_struct
 #ifdef JALLOC_TRAP_COUNT
     uint32_t trap_counts;
     uint32_t trap_values[JALLOC_TRAP_COUNT];
+    void(* trap_callbacks[JALLOC_TRAP_COUNT])(uint32_t idx, void* param);
+    void* trap_params[JALLOC_TRAP_COUNT];
 #endif
     mem_pool* pools;
     uint_fast64_t pool_buffer_size;
 };
 
 static uint_fast64_t PAGE_SIZE = 0;
+
+static const char* const ILL_JALLOCATOR_TYPE_STRING = "Implicit linked list jallocator";
 
 static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
 {
@@ -73,105 +83,31 @@ static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
     return v;
 }
 
-jallocator* jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count)
+
+void ill_jallocator_destroy(jallocator* allocator)
 {
-    if (!PAGE_SIZE)
+    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
+    {
+        //  Mismatched types
+        return;
+    }
+    ill_jallocator* this = (ill_jallocator*)allocator;
+    for (uint_fast32_t i = 0; i < this->count; ++i)
     {
 #ifndef _WIN32
-        PAGE_SIZE = sysconf(_SC_PAGESIZE);
-#else
-        SYSTEM_INFO sys_info;
-        GetSystemInfo(&sys_info);
-        PG_SIZE = (long) sys_info.dwPageSize;
-#endif
-        //  Check that we have the page size
-        if (!PAGE_SIZE)
-        {
-            return NULL;
-        }
-    }
-    jallocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(*this)), PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-    if (this == MAP_FAILED)
-    {
-        return NULL;
-    }
-    *this = (jallocator){};
-    this->capacity = initial_pool_count < 32 ? 32 : initial_pool_count;
-    this->pool_buffer_size = round_to_nearest_page_up(this->capacity * sizeof(*this->pools));
-    this->capacity = this->pool_buffer_size / sizeof(*this->pools);
-    this->pools = mmap(0, this->pool_buffer_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-    if (!this->pools)
-    {
-        munmap(this, round_to_nearest_page_up(sizeof(*this)));
-        return NULL;
-    }
-
-    this->pool_size = round_to_nearest_page_up(pool_size);
-    for (uint_fast32_t i = 0; i < initial_pool_count; ++i)
-    {
-        mem_pool* p = this->pools + i;
-#ifndef _WIN32
-        p->base = mmap(NULL, pool_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-        if (p->base == MAP_FAILED)
-#else
-        p->base = VirtualAlloc(NULL, pool_size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-        if (p->base == NULL)
-#endif
-        {
-            for (uint_fast32_t j = 0; j < i; ++j)
-            {
-#ifndef _WIN32
-                munmap(this->pools[i].base, pool_size);
-#else
-                WINBOOL res = VirtualFree(this->pools[i].base, 0, MEM_RELEASE);
-                assert(res != 0);
-#endif
-            }
-            munmap(this->pools, this->pool_buffer_size);
-            munmap(this, round_to_nearest_page_up(sizeof(*this)));
-            return NULL;
-        }
-        p->size = this->pool_size;
-        p->used = 0;
-        p->free = this->pool_size;
-        mem_chunk* c = p->base;
-        p->smallest = c;
-        p->largest = c;
-        c->used = 0;
-        c->prev = NULL;
-        c->next = NULL;
-        c->size = this->pool_size;
-    }
-    this->count = initial_pool_count;
-#ifdef JALLOC_TRACKING
-    this->biggest_allocation = 0;
-    this->max_allocated = 0;
-    this->total_allocated = 0;
-    this->allocator_index = 0;
-    this->current_allocated = 0;
-#endif
-
-    return this;
-}
-
-void jallocator_destroy(jallocator* allocator)
-{
-    for (uint_fast32_t i = 0; i < allocator->count; ++i)
-    {
-#ifndef _WIN32
-        munmap(allocator->pools[i].base, allocator->pool_size);
+        munmap(this->pools[i].base, this->pool_size);
 #else
         WINBOOL res = VirtualFree(allocator->pools[i].base, 0, MEM_RELEASE);
         assert(res != 0);
 #endif
     }
-    for (uint_fast64_t i = 0; i < allocator->count; ++i)
+    for (uint_fast64_t i = 0; i < this->count; ++i)
     {
-        allocator->pools[i] = (mem_pool){};
+        this->pools[i] = (mem_pool){};
     }
-    munmap(allocator->pools, allocator->pool_buffer_size);
-    *allocator = (jallocator){};
-    munmap(allocator, round_to_nearest_page_up(sizeof(*allocator)));
+    munmap(this->pools, this->pool_buffer_size);
+    *this = (ill_jallocator){};
+    munmap(this, round_to_nearest_page_up(sizeof(*this)));
 }
 
 static inline uint_fast64_t round_up_size(uint_fast64_t size)
@@ -186,7 +122,7 @@ static inline uint_fast64_t round_up_size(uint_fast64_t size)
     return size;
 }
 
-static inline mem_pool* find_supporting_pool(jallocator* allocator, uint_fast64_t size)
+static inline mem_pool* find_supporting_pool(ill_jallocator* allocator, uint_fast64_t size)
 {
     for (uint_fast32_t i = 0; i < allocator->count; ++i)
     {
@@ -332,7 +268,7 @@ beginning_of_fn:
     pool->used -= chunk->size;
 }
 
-static inline mem_pool* find_chunk_pool(jallocator* allocator, void* ptr)
+static inline mem_pool* find_chunk_pool(ill_jallocator* allocator, void* ptr)
 {
     for (uint_fast32_t i = 0; i < allocator->count; ++i)
     {
@@ -345,21 +281,27 @@ static inline mem_pool* find_chunk_pool(jallocator* allocator, void* ptr)
     return NULL;
 }
 
-void* jalloc(jallocator* allocator, uint_fast64_t size)
+void* ill_jalloc(jallocator* allocator, uint_fast64_t size)
 {
+    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
+    {
+        //  Mismatched types
+        return NULL;
+    }
+    ill_jallocator* this = (ill_jallocator*)allocator;
     const uint_fast64_t original_size = size;
     //  Round up size to 8 bytes
     size = round_up_size(size);
 
     //  Check there's a pool that can support the allocation
-    mem_pool* pool = find_supporting_pool(allocator, size);
+    mem_pool* pool = find_supporting_pool(this, size);
     if (!pool)
     {
         //  Create a new pool
-        if (allocator->count == allocator->capacity)
+        if (this->count == this->capacity)
         {
-            uint_fast64_t new_memory_size = allocator->pool_buffer_size + PAGE_SIZE;
-            mem_pool* new_ptr = mremap(allocator->pools, allocator->pool_buffer_size, new_memory_size, MREMAP_MAYMOVE);
+            uint_fast64_t new_memory_size = this->pool_buffer_size + PAGE_SIZE;
+            mem_pool* new_ptr = mremap(this->pools, this->pool_buffer_size, new_memory_size, MREMAP_MAYMOVE);
             if (new_ptr == MAP_FAILED)
             {
                 new_ptr = mmap(NULL, new_memory_size, PROT_WRITE|PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
@@ -367,18 +309,18 @@ void* jalloc(jallocator* allocator, uint_fast64_t size)
                 {
                     return NULL;
                 }
-                for (uint_fast64_t i = 0; i < allocator->count; ++i)
+                for (uint_fast64_t i = 0; i < this->count; ++i)
                 {
-                    new_ptr[i] = allocator->pools[i];
+                    new_ptr[i] = this->pools[i];
                 }
-                munmap(allocator->pools, allocator->pool_buffer_size);
+                munmap(this->pools, this->pool_buffer_size);
             }
-            memset((void*)((uintptr_t)new_ptr + allocator->pool_buffer_size), 0, PAGE_SIZE);
-            allocator->pool_buffer_size = new_memory_size;
-            allocator->pools = new_ptr;
+            memset((void*)((uintptr_t)new_ptr + this->pool_buffer_size), 0, PAGE_SIZE);
+            this->pool_buffer_size = new_memory_size;
+            this->pools = new_ptr;
         }
 
-        const uint_fast64_t pool_size = round_to_nearest_page_up(allocator->pool_size > size + sizeof(mem_chunk) ? allocator->pool_size : size + sizeof(mem_chunk));
+        const uint_fast64_t pool_size = round_to_nearest_page_up(this->pool_size > size + sizeof(mem_chunk) ? this->pool_size : size + sizeof(mem_chunk));
 #ifndef _WIN32
         mem_chunk* base_chunk = mmap(NULL, pool_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
         if (base_chunk == MAP_FAILED)
@@ -387,6 +329,10 @@ void* jalloc(jallocator* allocator, uint_fast64_t size)
         if (base_chunk == NULL)
 #endif
         {
+            if (allocator->bad_alloc_callback)
+            {
+                allocator->bad_alloc_callback(allocator, allocator->bad_alloc_param);
+            }
             return NULL;
         }
         base_chunk->size = pool_size;
@@ -402,8 +348,8 @@ void* jalloc(jallocator* allocator, uint_fast64_t size)
                 .free = pool_size,
                 .size = pool_size,
                 };
-        pool = allocator->pools + allocator->count;
-        allocator->pools[allocator->count++] = new_pool;
+        pool = this->pools + this->count;
+        this->pools[this->count++] = new_pool;
     }
 
     //  Find the smallest block which fits
@@ -424,40 +370,86 @@ void* jalloc(jallocator* allocator, uint_fast64_t size)
 
     chunk->used = 1;
 #ifdef JALLOC_TRACKING
-    chunk->idx = ++allocator->allocator_index;
+    chunk->idx = ++this->allocator_index;
 #ifdef JALLOC_TRAP_COUNT
-    for (uint32_t i = 0; i < allocator->trap_counts; ++i)
+    for (uint32_t i = 0; i < this->trap_counts; ++i)
     {
-        if (chunk->idx == allocator->trap_values[i])
+        if (chunk->idx == this->trap_values[i])
         {
-            for (uint32_t j = i; j < allocator->trap_counts - 1; ++j)
+            void (* callback)(uint32_t idx, void* param) = this->trap_callbacks[i];
+            void* param = this->trap_params[i];
+            for (uint32_t j = i; j < this->trap_counts - 1; ++j)
             {
-                allocator->trap_values[j] = allocator->trap_values[j + 1];
+                this->trap_values[j] = this->trap_values[j + 1];
             }
-            allocator->trap_counts -= 1;
-            __builtin_trap();
+            this->trap_counts -= 1;
+            assert(callback);
+            callback(this->allocator_index, param);
+            break;
         }
     }
 #endif
-    allocator->total_allocated += chunk->size;
-    if (allocator->max_allocated < chunk->size)
+    this->total_allocated += chunk->size;
+    if (this->max_allocated < chunk->size)
     {
-        allocator->max_allocated = chunk->size;
+        this->max_allocated = chunk->size;
     }
-    allocator->current_allocated += chunk->size;
-    if (allocator->current_allocated > allocator->max_allocated)
+    this->current_allocated += chunk->size;
+    if (this->current_allocated > this->max_allocated)
     {
-        allocator->max_allocated = allocator->current_allocated;
+        this->max_allocated = this->current_allocated;
     }
 #endif
     return &chunk->next;
 }
 
-void* jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
+void ill_jfree(jallocator* allocator, void* ptr)
 {
+    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
+    {
+        //  Mismatched types
+        return;
+    }
+    ill_jallocator* this = (ill_jallocator*)allocator;
+    //  Check for null
+    if (!ptr) return;
+    //  Check what pool this is from
+    mem_pool* pool = find_chunk_pool(this, ptr);
+    mem_chunk* chunk = ptr - offsetof(mem_chunk, next);
+#ifdef JALLOC_TRACKING
+    this->current_allocated -= chunk->size;
+#endif
+    if (!pool)
+    {
+        return;
+    }
+
+    if (chunk->used != 0)
+    {
+        //  Double free
+        if (allocator->double_free_callback)
+        {
+            allocator->double_free_callback(allocator, allocator->double_free_param);
+        }
+        return;
+    }
+
+    //  Mark chunk as no longer used, then return it back to the pool
+    chunk->used = 0;
+    insert_chunk_into_pool(pool, chunk);
+}
+
+void* ill_jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
+{
+    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
+    {
+        //  Mismatched types
+        return NULL;
+    }
+    ill_jallocator* this = (ill_jallocator*)allocator;
     if (!ptr)
     {
-        return jalloc(allocator, new_size);
+        return ill_jalloc(allocator, new_size);
     }
     const uint_fast64_t original_size = new_size;
     new_size = round_up_size(new_size);
@@ -466,11 +458,15 @@ void* jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
 
     mem_chunk* chunk = ptr - offsetof(mem_chunk, next);
     //  Try and find pool it came from
-    mem_pool* pool = find_chunk_pool(allocator, ptr);
+    mem_pool* pool = find_chunk_pool(this, ptr);
     //  Check if it came from a pool
     if (!pool)
     {
         //  It did not come from a pool
+        if (allocator->bad_alloc_callback)
+        {
+            allocator->bad_alloc_callback(allocator, allocator->bad_alloc_param);
+        }
         return NULL;
     }
 
@@ -495,9 +491,9 @@ void* jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
             && possible_chunk->size + chunk->size >= new_size))               //  Is the other chunk large enough to accommodate us
         {
             //  Can not make use of any adjacent chunks, so allocate a new block, copy memory to it, free current block, then return the new block
-            void* new_ptr = jalloc(allocator, new_size - offsetof(mem_chunk, next));
+            void* new_ptr = ill_jalloc(allocator, new_size - offsetof(mem_chunk, next));
             memcpy(new_ptr, ptr, chunk->size - offsetof(mem_chunk, next));
-            jfree(allocator, ptr);
+            ill_jfree(allocator, ptr);
             return new_ptr;
         }
 
@@ -532,32 +528,38 @@ void* jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
 
 
 #ifdef JALLOC_TRACKING
-    allocator->current_allocated -= old_size;
-    allocator->current_allocated += new_size;
-    allocator->total_allocated += new_size > old_size ? new_size - old_size : 0;
-    if (allocator->current_allocated > allocator->max_allocated)
+    this->current_allocated -= old_size;
+    this->current_allocated += new_size;
+    this->total_allocated += new_size > old_size ? new_size - old_size : 0;
+    if (this->current_allocated > this->max_allocated)
     {
-        allocator->max_allocated = allocator->current_allocated;
+        this->max_allocated = this->current_allocated;
     }
-    if (new_size > allocator->biggest_allocation)
+    if (new_size > this->biggest_allocation)
     {
-        allocator->biggest_allocation = new_size;
+        this->biggest_allocation = new_size;
     }
 #endif
     return &chunk->next;
 }
 
-int jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t* i_block)
+int ill_jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t* i_block)
 {
+    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
+    {
+        //  Mismatched types
+        return -2;
+    }
+    ill_jallocator* this = (ill_jallocator*)allocator;
 #ifndef NDEBUG
 #define VERIFICATION_CHECK(x) assert(x)
 #else
 #define VERIFICATION_CHECK(x) if (!(x)) { if (i_pool) *i_pool = i; if (i_block) *i_block = j; return -1;} (void)0
 #endif
 
-    for (int_fast32_t i = 0, j = 0; i < allocator->count; ++i, j = -1)
+    for (int_fast32_t i = 0, j = 0; i < this->count; ++i, j = -1)
     {
-        const mem_pool* pool = allocator->pools + i;
+        const mem_pool* pool = this->pools + i;
         uint_fast32_t accounted_free_space = 0, accounted_used_space = 0;
         //  Loop forward to verify forward links and free space
         j = 0;
@@ -589,11 +591,11 @@ int jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t*
         accounted_free_space = 0;
         j = 0;
         //  Do a full walk through the whole block
-        for (void* current = pool->base; current < pool->base + allocator->pool_size; current += ((mem_chunk*)current)->size, j -= 1)
+        for (void* current = pool->base; current < pool->base + this->pool_size; current += ((mem_chunk*)current)->size, j -= 1)
         {
             mem_chunk* chunk = current;
             VERIFICATION_CHECK(chunk->size >= sizeof(mem_chunk));
-            VERIFICATION_CHECK(current < pool->base + allocator->pool_size);
+            VERIFICATION_CHECK(current < pool->base + this->pool_size);
             if (chunk->used)
             {
                 accounted_used_space += chunk->size;
@@ -618,36 +620,22 @@ int jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t*
     return 0;
 }
 
-void jfree(jallocator* allocator, void* ptr)
+
+uint_fast32_t ill_jallocator_count_used_blocks(jallocator* allocator, uint_fast32_t size_out_buffer, uint_fast32_t* out_buffer)
 {
-    //  Check for null
-    if (!ptr) return;
-    //  Check what pool this is from
-    mem_pool* pool = find_chunk_pool(allocator, ptr);
-    mem_chunk* chunk = ptr - offsetof(mem_chunk, next);
-#ifdef JALLOC_TRACKING
-            allocator->current_allocated -= chunk->size;
-#endif
-    if (!pool)
+    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
     {
-        return;
+        //  Mismatched types
+        return -1;
     }
-
-    //  Mark chunk as no longer used, then return it back to the pool
-    chunk->used = 0;
-    insert_chunk_into_pool(pool, chunk);
-}
-
-uint_fast32_t
-jallocator_count_used_blocks(jallocator* allocator, uint_fast32_t size_out_buffer, uint_fast32_t* out_buffer)
-{
+    ill_jallocator* this = (ill_jallocator*)allocator;
 #ifndef JALLOC_TRACKING
     return 0;
 #else
     uint_fast32_t found = 0;
-    for (uint_fast64_t i = 0; i < allocator->count; ++i)
+    for (uint_fast64_t i = 0; i < this->count; ++i)
     {
-        const mem_pool* pool = allocator->pools + i;
+        const mem_pool* pool = this->pools + i;
         const void* pos = pool->base;
         while (pos != pool->base + pool->used + pool->free)
         {
@@ -673,34 +661,50 @@ jallocator_count_used_blocks(jallocator* allocator, uint_fast32_t size_out_buffe
 #endif
 }
 
-void jallocator_statistics(
+void ill_jallocator_statistics(
         jallocator* allocator, uint_fast64_t* p_max_allocation_size, uint_fast64_t* p_total_allocated,
         uint_fast64_t* p_max_usage, uint_fast64_t* p_allocation_count)
 {
+    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
+    {
+        //  Mismatched types
+        return;
+    }
+    ill_jallocator* this = (ill_jallocator*)allocator;
 #ifdef JALLOC_TRACKING
-    *p_max_allocation_size = allocator->biggest_allocation;
-    *p_max_usage = allocator->max_allocated;
-    *p_total_allocated = allocator->total_allocated;
-    *p_allocation_count = allocator->allocator_index;
+    *p_max_allocation_size = this->biggest_allocation;
+    *p_max_usage = this->max_allocated;
+    *p_total_allocated = this->total_allocated;
+    *p_allocation_count = this->allocator_index;
 #endif
 }
 
-int jallocator_set_debug_trap(jallocator* allocator, uint32_t index)
+int ill_jallocator_set_debug_trap(jallocator* allocator, uint32_t index, void(*callback_function)(uint32_t index, void* param), void* param)
 {
+    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
+    {
+        //  Mismatched types
+        return 0;
+    }
+    ill_jallocator* this = (ill_jallocator*)allocator;
+    if (!callback_function) return 0;
 #ifdef JALLOC_TRAP_COUNT
-    if (allocator->trap_counts == JALLOC_TRAP_COUNT)
+    if (this->trap_counts == JALLOC_TRAP_COUNT)
     {
         return 0;
     }
 
-    for (uint32_t i = 0; i < allocator->trap_counts; ++i)
+    for (uint32_t i = 0; i < this->trap_counts; ++i)
     {
-        if (allocator->trap_values[i] == index)
+        if (this->trap_values[i] == index)
         {
             return 1;
         }
     }
-    allocator->trap_values[allocator->trap_counts++] = index;
+    this->trap_values[this->trap_counts] = index;
+    this->trap_callbacks[this->trap_counts] = callback_function;
+    this->trap_params[this->trap_counts] = param;
+    this->trap_counts += 1;
 #endif
     return 1;
 }
@@ -714,4 +718,105 @@ static inline uint_fast64_t check_for_aligned_size(mem_chunk* chunk, uint_fast64
         return size;
     }
     return size + (alignment - extra);
+}
+
+static const jallocator_unordered_interface i_unordered =
+        {
+            .alloc = ill_jalloc,
+            .free = ill_jfree,
+            .realloc = ill_jrealloc,
+        };
+
+static const jallocator_stack_interface i_stack =
+        {
+                .alloc = ill_jalloc,
+                .free = ill_jfree,
+                .realloc = ill_jrealloc,
+        };
+
+jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count)
+{
+    if (!PAGE_SIZE)
+    {
+#ifndef _WIN32
+        PAGE_SIZE = sysconf(_SC_PAGESIZE);
+#else
+        SYSTEM_INFO sys_info;
+        GetSystemInfo(&sys_info);
+        PG_SIZE = (long) sys_info.dwPageSize;
+#endif
+        //  Check that we have the page size
+        if (!PAGE_SIZE)
+        {
+            return NULL;
+        }
+    }
+    ill_jallocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(*this)), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (this == MAP_FAILED)
+    {
+        return NULL;
+    }
+    *this = (ill_jallocator){};
+    this->capacity = initial_pool_count < 32 ? 32 : initial_pool_count;
+    this->pool_buffer_size = round_to_nearest_page_up(this->capacity * sizeof(*this->pools));
+    this->capacity = this->pool_buffer_size / sizeof(*this->pools);
+    this->pools = mmap(0, this->pool_buffer_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+    if (!this->pools)
+    {
+        munmap(this, round_to_nearest_page_up(sizeof(*this)));
+        return NULL;
+    }
+
+    this->pool_size = round_to_nearest_page_up(pool_size);
+    for (uint_fast32_t i = 0; i < initial_pool_count; ++i)
+    {
+        mem_pool* p = this->pools + i;
+#ifndef _WIN32
+        p->base = mmap(NULL, pool_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+        if (p->base == MAP_FAILED)
+#else
+            p->base = VirtualAlloc(NULL, pool_size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+        if (p->base == NULL)
+#endif
+        {
+            for (uint_fast32_t j = 0; j < i; ++j)
+            {
+#ifndef _WIN32
+                munmap(this->pools[i].base, pool_size);
+#else
+                WINBOOL res = VirtualFree(this->pools[i].base, 0, MEM_RELEASE);
+                assert(res != 0);
+#endif
+            }
+            munmap(this->pools, this->pool_buffer_size);
+            munmap(this, round_to_nearest_page_up(sizeof(*this)));
+            return NULL;
+        }
+        p->size = this->pool_size;
+        p->used = 0;
+        p->free = this->pool_size;
+        mem_chunk* c = p->base;
+        p->smallest = c;
+        p->largest = c;
+        c->used = 0;
+        c->prev = NULL;
+        c->next = NULL;
+        c->size = this->pool_size;
+    }
+    this->count = initial_pool_count;
+#ifdef JALLOC_TRACKING
+    this->biggest_allocation = 0;
+    this->max_allocated = 0;
+    this->total_allocated = 0;
+    this->allocator_index = 0;
+    this->current_allocated = 0;
+#endif
+
+    this->interface.type = ILL_JALLOCATOR_TYPE_STRING;
+    this->interface.i_unordered = &i_unordered;
+    this->interface.i_stack = &i_stack;
+    this->interface.i_restore = NULL;   //  Not supported
+    this->interface.destructor = ill_jallocator_destroy;
+
+    return &this->interface;
 }
