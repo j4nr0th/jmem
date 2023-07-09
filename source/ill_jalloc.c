@@ -424,7 +424,7 @@ void ill_jfree(jallocator* allocator, void* ptr)
         return;
     }
 
-    if (chunk->used != 0)
+    if (chunk->used == 0)
     {
         //  Double free
         if (allocator->double_free_callback)
