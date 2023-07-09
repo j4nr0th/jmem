@@ -199,18 +199,6 @@ static uint_fast64_t lin_jallocator_get_size(const linear_jallocator* jallocator
     return jallocator->max - jallocator->base;
 }
 
-static const jallocator_restore_interface i_restore =
-        {
-        .save_state = lin_jallocator_save_state,
-        .restore_state = lin_jallocator_restore_current,
-        };
-
-static const jallocator_stack_interface i_stack =
-        {
-        .alloc = lin_jalloc,
-        .free = lin_jfree,
-        .realloc = lin_jrealloc,
-        };
 
 jallocator* lin_jallocator_create(uint_fast64_t total_size)
 {
@@ -233,9 +221,6 @@ jallocator* lin_jallocator_create(uint_fast64_t total_size)
     this->max = (void*)((uintptr_t)this + sizeof(*this) + total_size);
 
     this->interface.type = LIN_JALLOC_NAME_STRING;
-    this->interface.i_stack = &i_stack;
-    this->interface.i_unordered = NULL; //  Not supported
-    this->interface.i_restore = &i_restore;
 
     return &this->interface;
 }

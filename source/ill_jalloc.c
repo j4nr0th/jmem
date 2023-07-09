@@ -720,20 +720,6 @@ static inline uint_fast64_t check_for_aligned_size(mem_chunk* chunk, uint_fast64
     return size + (alignment - extra);
 }
 
-static const jallocator_unordered_interface i_unordered =
-        {
-            .alloc = ill_jalloc,
-            .free = ill_jfree,
-            .realloc = ill_jrealloc,
-        };
-
-static const jallocator_stack_interface i_stack =
-        {
-                .alloc = ill_jalloc,
-                .free = ill_jfree,
-                .realloc = ill_jrealloc,
-        };
-
 jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count)
 {
     if (!PAGE_SIZE)
@@ -813,9 +799,6 @@ jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial
 #endif
 
     this->interface.type = ILL_JALLOCATOR_TYPE_STRING;
-    this->interface.i_unordered = &i_unordered;
-    this->interface.i_stack = &i_stack;
-    this->interface.i_restore = NULL;   //  Not supported
     this->interface.destructor = ill_jallocator_destroy;
 
     return &this->interface;
