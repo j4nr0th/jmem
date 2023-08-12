@@ -47,8 +47,6 @@ typedef struct ill_jallocator_struct ill_jallocator;
 
 struct ill_jallocator_struct
 {
-    jallocator interface;
-
     uint_fast64_t pool_size;
     uint_fast64_t capacity;
     uint_fast64_t count;
@@ -67,6 +65,12 @@ struct ill_jallocator_struct
 #endif
     mem_pool* pools;
     uint_fast64_t pool_buffer_size;
+
+    void (* bad_alloc_callback)(ill_jallocator* allocator, void* param);
+    void* bad_alloc_param;
+
+    void (* double_free_callback)(ill_jallocator* allocator, void* param);
+    void* double_free_param;
 };
 
 static uint_fast64_t PAGE_SIZE = 0;
@@ -84,13 +88,8 @@ static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
 }
 
 
-void ill_jallocator_destroy(jallocator* allocator)
+void ill_jallocator_destroy(ill_jallocator* allocator)
 {
-    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
-    {
-        //  Mismatched types
-        return;
-    }
     ill_jallocator* this = (ill_jallocator*)allocator;
     for (uint_fast32_t i = 0; i < this->count; ++i)
     {
@@ -281,13 +280,8 @@ static inline mem_pool* find_chunk_pool(ill_jallocator* allocator, void* ptr)
     return NULL;
 }
 
-void* ill_jalloc(jallocator* allocator, uint_fast64_t size)
+void* ill_jalloc(ill_jallocator* allocator, uint_fast64_t size)
 {
-    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
-    {
-        //  Mismatched types
-        return NULL;
-    }
     ill_jallocator* this = (ill_jallocator*)allocator;
     const uint_fast64_t original_size = size;
     //  Round up size to 8 bytes
@@ -403,13 +397,8 @@ void* ill_jalloc(jallocator* allocator, uint_fast64_t size)
     return &chunk->next;
 }
 
-void ill_jfree(jallocator* allocator, void* ptr)
+void ill_jfree(ill_jallocator* allocator, void* ptr)
 {
-    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
-    {
-        //  Mismatched types
-        return;
-    }
     ill_jallocator* this = (ill_jallocator*)allocator;
     //  Check for null
     if (!ptr) return;
@@ -439,13 +428,8 @@ void ill_jfree(jallocator* allocator, void* ptr)
     insert_chunk_into_pool(pool, chunk);
 }
 
-void* ill_jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
+void* ill_jrealloc(ill_jallocator* allocator, void* ptr, uint_fast64_t new_size)
 {
-    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
-    {
-        //  Mismatched types
-        return NULL;
-    }
     ill_jallocator* this = (ill_jallocator*)allocator;
     if (!ptr)
     {
@@ -543,13 +527,8 @@ void* ill_jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
     return &chunk->next;
 }
 
-int ill_jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast32_t* i_block)
+int ill_jallocator_verify(ill_jallocator* allocator, int_fast32_t* i_pool, int_fast32_t* i_block)
 {
-    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
-    {
-        //  Mismatched types
-        return -2;
-    }
     ill_jallocator* this = (ill_jallocator*)allocator;
 #ifndef NDEBUG
 #define VERIFICATION_CHECK(x) assert(x)
@@ -621,13 +600,8 @@ int ill_jallocator_verify(jallocator* allocator, int_fast32_t* i_pool, int_fast3
 }
 
 
-uint_fast32_t ill_jallocator_count_used_blocks(jallocator* allocator, uint_fast32_t size_out_buffer, uint_fast32_t* out_buffer)
+uint_fast32_t ill_jallocator_count_used_blocks(ill_jallocator* allocator, uint_fast32_t size_out_buffer, uint_fast32_t* out_buffer)
 {
-    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
-    {
-        //  Mismatched types
-        return -1;
-    }
     ill_jallocator* this = (ill_jallocator*)allocator;
 #ifndef JALLOC_TRACKING
     return 0;
@@ -662,14 +636,9 @@ uint_fast32_t ill_jallocator_count_used_blocks(jallocator* allocator, uint_fast3
 }
 
 void ill_jallocator_statistics(
-        jallocator* allocator, uint_fast64_t* p_max_allocation_size, uint_fast64_t* p_total_allocated,
+        ill_jallocator* allocator, uint_fast64_t* p_max_allocation_size, uint_fast64_t* p_total_allocated,
         uint_fast64_t* p_max_usage, uint_fast64_t* p_allocation_count)
 {
-    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
-    {
-        //  Mismatched types
-        return;
-    }
     ill_jallocator* this = (ill_jallocator*)allocator;
 #ifdef JALLOC_TRACKING
     *p_max_allocation_size = this->biggest_allocation;
@@ -679,13 +648,8 @@ void ill_jallocator_statistics(
 #endif
 }
 
-int ill_jallocator_set_debug_trap(jallocator* allocator, uint32_t index, void(*callback_function)(uint32_t index, void* param), void* param)
+int ill_jallocator_set_debug_trap(ill_jallocator* allocator, uint32_t index, void(*callback_function)(uint32_t index, void* param), void* param)
 {
-    if (allocator->type != ILL_JALLOCATOR_TYPE_STRING)
-    {
-        //  Mismatched types
-        return 0;
-    }
     ill_jallocator* this = (ill_jallocator*)allocator;
     if (!callback_function) return 0;
 #ifdef JALLOC_TRAP_COUNT
@@ -720,7 +684,7 @@ static inline uint_fast64_t check_for_aligned_size(mem_chunk* chunk, uint_fast64
     return size + (alignment - extra);
 }
 
-jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count)
+ill_jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count)
 {
     if (!PAGE_SIZE)
     {
@@ -798,8 +762,19 @@ jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial
     this->current_allocated = 0;
 #endif
 
-    this->interface.type = ILL_JALLOCATOR_TYPE_STRING;
-    this->interface.destructor = ill_jallocator_destroy;
+    return this;
+}
 
-    return &this->interface;
+void
+ill_jallocator_set_bad_alloc_callback(ill_jallocator* allocator, void (* callback)(ill_jallocator* allocator, void* param), void* param)
+{
+    allocator->bad_alloc_callback = callback;
+    allocator->bad_alloc_param = param;
+}
+
+void ill_jallocator_set_double_free_callback(
+        ill_jallocator* allocator, void (* callback)(ill_jallocator* allocator, void* param), void* param)
+{
+    allocator->double_free_callback = callback;
+    allocator->double_free_param = param;
 }

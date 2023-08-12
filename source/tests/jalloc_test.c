@@ -11,7 +11,7 @@ typedef uint32_t u32;
 int main()
 {
     void* pointer_array[1024] = {};
-    jallocator* allocator = ill_jallocator_create(64, 1);
+    ill_jallocator* allocator = ill_jallocator_create(64, 1);
     assert(allocator);
     for (u32 i = 0; i < 1024; ++i)
     {

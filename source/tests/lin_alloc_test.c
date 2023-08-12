@@ -13,7 +13,7 @@ typedef uint8_t u8;
 
 int main()
 {
-    jallocator* allocator = lin_jallocator_create(1 << 20);
+    lin_jallocator* allocator = lin_jallocator_create(1 << 20);
 
     clock_t total_base = 0, total_static = 0, total_comparison = 0;
     clock_t begin_base, begin_comparison, begin_static, end_base, end_comparison, end_static;

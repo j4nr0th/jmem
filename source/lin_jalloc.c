@@ -13,12 +13,11 @@
 #include <windows.h>
 #endif
 
-static const char* const LIN_JALLOC_NAME_STRING = "linear jallocator";
+static const char* const LIN_JALLOC_NAME_STRING = "linear lin_jallocator";
 
-typedef struct linear_jallocator_struct linear_jallocator;
-struct linear_jallocator_struct
+typedef struct lin_jallocator_struct lin_jallocator;
+struct lin_jallocator_struct
 {
-    jallocator interface;
     void* max;
     void* base;
     void* current;
@@ -26,13 +25,9 @@ struct linear_jallocator_struct
     unsigned char memory[];
 };
 
-void lin_jallocator_destroy(jallocator* allocator)
+void lin_jallocator_destroy(lin_jallocator* allocator)
 {
-    if (allocator->type != LIN_JALLOC_NAME_STRING)
-    {
-        return;
-    }
-    linear_jallocator* this = (linear_jallocator*)allocator;
+    lin_jallocator* this = (lin_jallocator*)allocator;
     const uint_fast64_t ret_v = this->peek - this->base;
 #ifndef _WIN32
     munmap(this, sizeof(*this) + this->max - this->base);
@@ -43,18 +38,13 @@ void lin_jallocator_destroy(jallocator* allocator)
 //    return ret_v;
 }
 
-void* lin_jalloc(jallocator* allocator, uint_fast64_t size)
+void* lin_jalloc(lin_jallocator* allocator, uint_fast64_t size)
 {
-    if (allocator->type != LIN_JALLOC_NAME_STRING)
-    {
-        //  Mismatch between function and allocator
-        return NULL;
-    }
     if (size & 7)
     {
         size += (8 - (size & 7));
     }
-    linear_jallocator* this = (linear_jallocator*)allocator;
+    lin_jallocator* this = (lin_jallocator*)allocator;
     //  Get current allocator position and find new bottom
     void* ret = this->current;
     void* new_bottom = ret + size;
@@ -75,15 +65,10 @@ void* lin_jalloc(jallocator* allocator, uint_fast64_t size)
     return ret;
 }
 
-void lin_jfree(jallocator* allocator, void* ptr)
+void lin_jfree(lin_jallocator* allocator, void* ptr)
 {
-    if (allocator->type != LIN_JALLOC_NAME_STRING)
-    {
-        //  Mismatch between function and allocator
-        return;
-    }
     if (!ptr) return;
-    linear_jallocator* this = (linear_jallocator*)allocator;
+    lin_jallocator* this = (lin_jallocator*)allocator;
     if (this->base <= ptr && this->max > ptr)
     {
         //  ptr is from the allocator
@@ -105,19 +90,14 @@ void lin_jfree(jallocator* allocator, void* ptr)
     }
 }
 
-void* lin_jrealloc(jallocator* allocator, void* ptr, uint_fast64_t new_size)
+void* lin_jrealloc(lin_jallocator* allocator, void* ptr, uint_fast64_t new_size)
 {
-    if (allocator->type != LIN_JALLOC_NAME_STRING)
-    {
-        //  Mismatch between function and allocator
-        return NULL;
-    }
     if (new_size & 7)
     {
         new_size += (8 - (new_size & 7));
     }
     if (!ptr) return lin_jalloc(allocator, new_size);
-    linear_jallocator* this = (linear_jallocator*)allocator;
+    lin_jallocator* this = (lin_jallocator*)allocator;
     //  Is the ptr from this allocator
     if (this->base <= ptr && this->max > ptr)
     {
@@ -171,36 +151,26 @@ static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
     return v;
 }
 
-void* lin_jallocator_save_state(jallocator* allocator)
+void* lin_jallocator_save_state(lin_jallocator* allocator)
 {
-    if (allocator->type != LIN_JALLOC_NAME_STRING)
-    {
-        //  Mismatch between function and allocator
-        return NULL;
-    }
-    const linear_jallocator* const this = (linear_jallocator*)allocator;
+    const lin_jallocator* const this = (lin_jallocator*)allocator;
     return this->current;
 }
 
-void lin_jallocator_restore_current(jallocator* allocator, void* ptr)
+void lin_jallocator_restore_current(lin_jallocator* allocator, void* ptr)
 {
-    if (allocator->type != LIN_JALLOC_NAME_STRING)
-    {
-        //  Mismatch between function and allocator
-        return;
-    }
-    linear_jallocator* const this = (linear_jallocator*)allocator;
+    lin_jallocator* const this = (lin_jallocator*)allocator;
     assert(ptr >= this->base && ptr < this->max);
     this->current = ptr;
 }
 
-static uint_fast64_t lin_jallocator_get_size(const linear_jallocator* jallocator)
+static uint_fast64_t lin_jallocator_get_size(const lin_jallocator* lin_jallocator)
 {
-    return jallocator->max - jallocator->base;
+    return lin_jallocator->max - lin_jallocator->base;
 }
 
 
-jallocator* lin_jallocator_create(uint_fast64_t total_size)
+lin_jallocator* lin_jallocator_create(uint_fast64_t total_size)
 {
     if (!PAGE_SIZE)
     {
@@ -213,14 +183,12 @@ jallocator* lin_jallocator_create(uint_fast64_t total_size)
 #endif
     }
     total_size = round_to_nearest_page_up(total_size);
-    linear_jallocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(linear_jallocator) + total_size), PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+    lin_jallocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(lin_jallocator) + total_size), PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
     if (this == MAP_FAILED) return NULL;
     this->base = (void*)((uintptr_t)this + sizeof(*this));
     this->current = (void*)((uintptr_t)this + sizeof(*this));
     this->peek = (void*)((uintptr_t)this + sizeof(*this));
     this->max = (void*)((uintptr_t)this + sizeof(*this) + total_size);
 
-    this->interface.type = LIN_JALLOC_NAME_STRING;
-
-    return &this->interface;
+    return this;
 }
