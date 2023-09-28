@@ -57,7 +57,7 @@ struct ill_allocator_struct
     uint_fast64_t max_allocated;
     uint_fast64_t current_allocated;
 #endif
-#ifdef ALLOC_TRAP_COUNT
+#ifdef JMEM_ALLOC_TRAP_COUNT
     uint32_t trap_counts;
     uint32_t trap_values[JMEM_ALLOC_TRAP_COUNT];
     void(* trap_callbacks[JMEM_ALLOC_TRAP_COUNT])(uint32_t idx, void* param);
