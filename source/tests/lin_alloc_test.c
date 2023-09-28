@@ -1,7 +1,7 @@
 //
 // Created by jan on 20.4.2023.
 //
-#include "../include/jmem/lin_jalloc.h"
+#include "../include/jmem/lin_alloc.h"
 #include <time.h>
 #include <string.h>
 #include <malloc.h>
@@ -13,7 +13,7 @@ typedef uint8_t u8;
 
 int main()
 {
-    lin_jallocator* allocator = lin_jallocator_create(1 << 20);
+    lin_allocator* allocator = lin_allocator_create(1 << 20);
 
     clock_t total_base = 0, total_static = 0, total_comparison = 0;
     clock_t begin_base, begin_comparison, begin_static, end_base, end_comparison, end_static;
@@ -55,7 +55,7 @@ int main()
             const u64 size = 1 << i;
             for (u32 j = 0; j < size / base_array_size; ++j)
             {
-                void* allocated_array = lin_jalloc(allocator, base_array_size);
+                void* allocated_array = lin_alloc(allocator, base_array_size);
                 assert(allocated_array);
                 explicit_bzero(allocated_array, base_array_size);
                 lin_jfree(allocator, allocated_array);
@@ -124,7 +124,7 @@ int main()
         begin_comparison = clock();
         for (u32 j = 0; j < 1024; ++j)
         {
-            ptr_array[j] = lin_jalloc(allocator, base_size);
+            ptr_array[j] = lin_alloc(allocator, base_size);
             assert(ptr_array[j]);
         }
         for (u32 j = 0; j < 1024; ++j)
@@ -152,6 +152,6 @@ int main()
     printf("%lu %lu %lu\n", total_static, total_base, total_comparison);
     printf("malloc time %lu clock ticks\nlin_alloc time %lu clock ticks\n", total_base - total_static, total_comparison - total_static);
 
-    lin_jallocator_destroy(allocator);
+    lin_allocator_destroy(allocator);
     return 0;
 }

@@ -2,7 +2,7 @@
 // Created by jan on 27.4.2023.
 //
 
-#include "include/jmem/ill_jalloc.h"
+#include "include/jmem/ill_alloc.h"
 #ifndef _WIN32
 #include <sys/mman.h>
 #include <unistd.h>
@@ -16,7 +16,7 @@
 typedef struct mem_chunk_struct mem_chunk;
 struct mem_chunk_struct
 {
-#ifdef JALLOC_TRACKING
+#ifdef JMEM_ALLOC_TRACKING
     uint_fast64_t size:48;
     uint_fast64_t idx:13;
 #else
@@ -43,39 +43,39 @@ struct mem_pool_struct
 /**
  * @brief Opaque structure to store the state of allocator. Not thread safe.
  */
-typedef struct ill_jallocator_struct ill_jallocator;
+typedef struct ill_allocator_struct ill_allocator;
 
-struct ill_jallocator_struct
+struct ill_allocator_struct
 {
     uint_fast64_t pool_size;
     uint_fast64_t capacity;
     uint_fast64_t count;
-#ifdef JALLOC_TRACKING
+#ifdef JMEM_ALLOC_TRACKING
     uint_fast64_t allocator_index;
     uint_fast64_t total_allocated;
     uint_fast64_t biggest_allocation;
     uint_fast64_t max_allocated;
     uint_fast64_t current_allocated;
 #endif
-#ifdef JALLOC_TRAP_COUNT
+#ifdef ALLOC_TRAP_COUNT
     uint32_t trap_counts;
-    uint32_t trap_values[JALLOC_TRAP_COUNT];
-    void(* trap_callbacks[JALLOC_TRAP_COUNT])(uint32_t idx, void* param);
-    void* trap_params[JALLOC_TRAP_COUNT];
+    uint32_t trap_values[JMEM_ALLOC_TRAP_COUNT];
+    void(* trap_callbacks[JMEM_ALLOC_TRAP_COUNT])(uint32_t idx, void* param);
+    void* trap_params[JMEM_ALLOC_TRAP_COUNT];
 #endif
     mem_pool* pools;
     uint_fast64_t pool_buffer_size;
 
-    void (* bad_alloc_callback)(ill_jallocator* allocator, void* param);
+    void (* bad_alloc_callback)(ill_allocator* allocator, void* param);
     void* bad_alloc_param;
 
-    void (* double_free_callback)(ill_jallocator* allocator, void* param);
+    void (* double_free_callback)(ill_allocator* allocator, void* param);
     void* double_free_param;
 };
 
 static uint_fast64_t PAGE_SIZE = 0;
 
-static const char* const ILL_JALLOCATOR_TYPE_STRING = "Implicit linked list jallocator";
+static const char* const ILL_ALLOCATOR_TYPE_STRING = "Implicit linked list allocator";
 
 static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
 {
@@ -88,9 +88,9 @@ static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
 }
 
 
-void ill_jallocator_destroy(ill_jallocator* allocator)
+void ill_allocator_destroy(ill_allocator* allocator)
 {
-    ill_jallocator* this = (ill_jallocator*)allocator;
+    ill_allocator* this = (ill_allocator*)allocator;
     for (uint_fast32_t i = 0; i < this->count; ++i)
     {
 #ifndef _WIN32
@@ -105,7 +105,7 @@ void ill_jallocator_destroy(ill_jallocator* allocator)
         this->pools[i] = (mem_pool){};
     }
     munmap(this->pools, this->pool_buffer_size);
-    *this = (ill_jallocator){};
+    *this = (ill_allocator){};
     munmap(this, round_to_nearest_page_up(sizeof(*this)));
 }
 
@@ -121,7 +121,7 @@ static inline uint_fast64_t round_up_size(uint_fast64_t size)
     return size;
 }
 
-static inline mem_pool* find_supporting_pool(ill_jallocator* allocator, uint_fast64_t size)
+static inline mem_pool* find_supporting_pool(ill_allocator* allocator, uint_fast64_t size)
 {
     for (uint_fast32_t i = 0; i < allocator->count; ++i)
     {
@@ -267,7 +267,7 @@ beginning_of_fn:
     pool->used -= chunk->size;
 }
 
-static inline mem_pool* find_chunk_pool(ill_jallocator* allocator, void* ptr)
+static inline mem_pool* find_chunk_pool(ill_allocator* allocator, void* ptr)
 {
     for (uint_fast32_t i = 0; i < allocator->count; ++i)
     {
@@ -280,9 +280,9 @@ static inline mem_pool* find_chunk_pool(ill_jallocator* allocator, void* ptr)
     return NULL;
 }
 
-void* ill_jalloc(ill_jallocator* allocator, uint_fast64_t size)
+void* ill_alloc(ill_allocator* allocator, uint_fast64_t size)
 {
-    ill_jallocator* this = (ill_jallocator*)allocator;
+    ill_allocator* this = (ill_allocator*)allocator;
     const uint_fast64_t original_size = size;
     //  Round up size to 8 bytes
     size = round_up_size(size);
@@ -363,9 +363,9 @@ void* ill_jalloc(ill_jallocator* allocator, uint_fast64_t size)
     }
 
     chunk->used = 1;
-#ifdef JALLOC_TRACKING
+#ifdef JMEM_ALLOC_TRACKING
     chunk->idx = ++this->allocator_index;
-#ifdef JALLOC_TRAP_COUNT
+#ifdef JMEM_ALLOC_TRAP_COUNT
     for (uint32_t i = 0; i < this->trap_counts; ++i)
     {
         if (chunk->idx == this->trap_values[i])
@@ -397,15 +397,15 @@ void* ill_jalloc(ill_jallocator* allocator, uint_fast64_t size)
     return &chunk->next;
 }
 
-void ill_jfree(ill_jallocator* allocator, void* ptr)
+void ill_jfree(ill_allocator* allocator, void* ptr)
 {
-    ill_jallocator* this = (ill_jallocator*)allocator;
+    ill_allocator* this = (ill_allocator*)allocator;
     //  Check for null
     if (!ptr) return;
     //  Check what pool this is from
     mem_pool* pool = find_chunk_pool(this, ptr);
     mem_chunk* chunk = ptr - offsetof(mem_chunk, next);
-#ifdef JALLOC_TRACKING
+#ifdef JMEM_ALLOC_TRACKING
     this->current_allocated -= chunk->size;
 #endif
     if (!pool)
@@ -428,12 +428,12 @@ void ill_jfree(ill_jallocator* allocator, void* ptr)
     insert_chunk_into_pool(pool, chunk);
 }
 
-void* ill_jrealloc(ill_jallocator* allocator, void* ptr, uint_fast64_t new_size)
+void* ill_jrealloc(ill_allocator* allocator, void* ptr, uint_fast64_t new_size)
 {
-    ill_jallocator* this = (ill_jallocator*)allocator;
+    ill_allocator* this = (ill_allocator*)allocator;
     if (!ptr)
     {
-        return ill_jalloc(allocator, new_size);
+        return ill_alloc(allocator, new_size);
     }
     const uint_fast64_t original_size = new_size;
     new_size = round_up_size(new_size);
@@ -475,7 +475,7 @@ void* ill_jrealloc(ill_jallocator* allocator, void* ptr, uint_fast64_t new_size)
             && possible_chunk->size + chunk->size >= new_size))               //  Is the other chunk large enough to accommodate us
         {
             //  Can not make use of any adjacent chunks, so allocate a new block, copy memory to it, free current block, then return the new block
-            void* new_ptr = ill_jalloc(allocator, new_size - offsetof(mem_chunk, next));
+            void* new_ptr = ill_alloc(allocator, new_size - offsetof(mem_chunk, next));
             memcpy(new_ptr, ptr, chunk->size - offsetof(mem_chunk, next));
             ill_jfree(allocator, ptr);
             return new_ptr;
@@ -511,7 +511,7 @@ void* ill_jrealloc(ill_jallocator* allocator, void* ptr, uint_fast64_t new_size)
     }
 
 
-#ifdef JALLOC_TRACKING
+#ifdef JMEM_ALLOC_TRACKING
     this->current_allocated -= old_size;
     this->current_allocated += new_size;
     this->total_allocated += new_size > old_size ? new_size - old_size : 0;
@@ -527,9 +527,9 @@ void* ill_jrealloc(ill_jallocator* allocator, void* ptr, uint_fast64_t new_size)
     return &chunk->next;
 }
 
-int ill_jallocator_verify(ill_jallocator* allocator, int_fast32_t* i_pool, int_fast32_t* i_block)
+int ill_allocator_verify(ill_allocator* allocator, int_fast32_t* i_pool, int_fast32_t* i_block)
 {
-    ill_jallocator* this = (ill_jallocator*)allocator;
+    ill_allocator* this = (ill_allocator*)allocator;
 #ifndef NDEBUG
 #define VERIFICATION_CHECK(x) assert(x)
 #else
@@ -600,10 +600,10 @@ int ill_jallocator_verify(ill_jallocator* allocator, int_fast32_t* i_pool, int_f
 }
 
 
-uint_fast32_t ill_jallocator_count_used_blocks(ill_jallocator* allocator, uint_fast32_t size_out_buffer, uint_fast32_t* out_buffer)
+uint_fast32_t ill_allocator_count_used_blocks(ill_allocator* allocator, uint_fast32_t size_out_buffer, uint_fast32_t* out_buffer)
 {
-    ill_jallocator* this = (ill_jallocator*)allocator;
-#ifndef JALLOC_TRACKING
+    ill_allocator* this = (ill_allocator*)allocator;
+#ifndef JMEM_ALLOC_TRACKING
     return 0;
 #else
     uint_fast32_t found = 0;
@@ -635,12 +635,12 @@ uint_fast32_t ill_jallocator_count_used_blocks(ill_jallocator* allocator, uint_f
 #endif
 }
 
-void ill_jallocator_statistics(
-        ill_jallocator* allocator, uint_fast64_t* p_max_allocation_size, uint_fast64_t* p_total_allocated,
+void ill_allocator_statistics(
+        ill_allocator* allocator, uint_fast64_t* p_max_allocation_size, uint_fast64_t* p_total_allocated,
         uint_fast64_t* p_max_usage, uint_fast64_t* p_allocation_count)
 {
-    ill_jallocator* this = (ill_jallocator*)allocator;
-#ifdef JALLOC_TRACKING
+    ill_allocator* this = (ill_allocator*)allocator;
+#ifdef JMEM_ALLOC_TRACKING
     *p_max_allocation_size = this->biggest_allocation;
     *p_max_usage = this->max_allocated;
     *p_total_allocated = this->total_allocated;
@@ -648,12 +648,12 @@ void ill_jallocator_statistics(
 #endif
 }
 
-int ill_jallocator_set_debug_trap(ill_jallocator* allocator, uint32_t index, void(*callback_function)(uint32_t index, void* param), void* param)
+int ill_allocator_set_debug_trap(ill_allocator* allocator, uint32_t index, void(*callback_function)(uint32_t index, void* param), void* param)
 {
-    ill_jallocator* this = (ill_jallocator*)allocator;
+    ill_allocator* this = (ill_allocator*)allocator;
     if (!callback_function) return 0;
-#ifdef JALLOC_TRAP_COUNT
-    if (this->trap_counts == JALLOC_TRAP_COUNT)
+#ifdef JMEM_ALLOC_TRAP_COUNT
+    if (this->trap_counts == JMEM_ALLOC_TRAP_COUNT)
     {
         return 0;
     }
@@ -684,7 +684,7 @@ static inline uint_fast64_t check_for_aligned_size(mem_chunk* chunk, uint_fast64
     return size + (alignment - extra);
 }
 
-ill_jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count)
+ill_allocator* ill_allocator_create(uint_fast64_t pool_size, uint_fast64_t initial_pool_count)
 {
     if (!PAGE_SIZE)
     {
@@ -701,12 +701,12 @@ ill_jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t ini
             return NULL;
         }
     }
-    ill_jallocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(*this)), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    ill_allocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(*this)), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     if (this == MAP_FAILED)
     {
         return NULL;
     }
-    *this = (ill_jallocator){};
+    *this = (ill_allocator){};
     this->capacity = initial_pool_count < 32 ? 32 : initial_pool_count;
     this->pool_buffer_size = round_to_nearest_page_up(this->capacity * sizeof(*this->pools));
     this->capacity = this->pool_buffer_size / sizeof(*this->pools);
@@ -754,7 +754,7 @@ ill_jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t ini
         c->size = this->pool_size;
     }
     this->count = initial_pool_count;
-#ifdef JALLOC_TRACKING
+#ifdef JMEM_ALLOC_TRACKING
     this->biggest_allocation = 0;
     this->max_allocated = 0;
     this->total_allocated = 0;
@@ -766,14 +766,14 @@ ill_jallocator* ill_jallocator_create(uint_fast64_t pool_size, uint_fast64_t ini
 }
 
 void
-ill_jallocator_set_bad_alloc_callback(ill_jallocator* allocator, void (* callback)(ill_jallocator* allocator, void* param), void* param)
+ill_allocator_set_bad_alloc_callback(ill_allocator* allocator, void (* callback)(ill_allocator* allocator, void* param), void* param)
 {
     allocator->bad_alloc_callback = callback;
     allocator->bad_alloc_param = param;
 }
 
-void ill_jallocator_set_double_free_callback(
-        ill_jallocator* allocator, void (* callback)(ill_jallocator* allocator, void* param), void* param)
+void ill_allocator_set_double_free_callback(
+        ill_allocator* allocator, void (* callback)(ill_allocator* allocator, void* param), void* param)
 {
     allocator->double_free_callback = callback;
     allocator->double_free_param = param;

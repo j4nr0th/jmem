@@ -3,7 +3,7 @@
 //
 
 #include <errno.h>
-#include "include/jmem/lin_jalloc.h"
+#include "include/jmem/lin_alloc.h"
 #include <string.h>
 #include <assert.h>
 #include <unistd.h>
@@ -13,10 +13,10 @@
 #include <windows.h>
 #endif
 
-static const char* const LIN_JALLOC_NAME_STRING = "linear lin_jallocator";
+static const char* const LIN_ALLOC_NAME_STRING = "linear lin_allocator";
 
-typedef struct lin_jallocator_struct lin_jallocator;
-struct lin_jallocator_struct
+typedef struct lin_allocator_struct lin_allocator;
+struct lin_allocator_struct
 {
     void* max;
     void* base;
@@ -25,9 +25,9 @@ struct lin_jallocator_struct
     unsigned char memory[];
 };
 
-void lin_jallocator_destroy(lin_jallocator* allocator)
+void lin_allocator_destroy(lin_allocator* allocator)
 {
-    lin_jallocator* this = (lin_jallocator*)allocator;
+    lin_allocator* this = (lin_allocator*)allocator;
     const uint_fast64_t ret_v = this->peek - this->base;
 #ifndef _WIN32
     munmap(this, sizeof(*this) + this->max - this->base);
@@ -38,13 +38,13 @@ void lin_jallocator_destroy(lin_jallocator* allocator)
 //    return ret_v;
 }
 
-void* lin_jalloc(lin_jallocator* allocator, uint_fast64_t size)
+void* lin_alloc(lin_allocator* allocator, uint_fast64_t size)
 {
     if (size & 7)
     {
         size += (8 - (size & 7));
     }
-    lin_jallocator* this = (lin_jallocator*)allocator;
+    lin_allocator* this = (lin_allocator*)allocator;
     //  Get current allocator position and find new bottom
     void* ret = this->current;
     void* new_bottom = ret + size;
@@ -65,10 +65,10 @@ void* lin_jalloc(lin_jallocator* allocator, uint_fast64_t size)
     return ret;
 }
 
-void lin_jfree(lin_jallocator* allocator, void* ptr)
+void lin_jfree(lin_allocator* allocator, void* ptr)
 {
     if (!ptr) return;
-    lin_jallocator* this = (lin_jallocator*)allocator;
+    lin_allocator* this = (lin_allocator*)allocator;
     if (this->base <= ptr && this->max > ptr)
     {
         //  ptr is from the allocator
@@ -90,14 +90,14 @@ void lin_jfree(lin_jallocator* allocator, void* ptr)
     }
 }
 
-void* lin_jrealloc(lin_jallocator* allocator, void* ptr, uint_fast64_t new_size)
+void* lin_jrealloc(lin_allocator* allocator, void* ptr, uint_fast64_t new_size)
 {
     if (new_size & 7)
     {
         new_size += (8 - (new_size & 7));
     }
-    if (!ptr) return lin_jalloc(allocator, new_size);
-    lin_jallocator* this = (lin_jallocator*)allocator;
+    if (!ptr) return lin_alloc(allocator, new_size);
+    lin_allocator* this = (lin_allocator*)allocator;
     //  Is the ptr from this allocator
     if (this->base <= ptr && this->max > ptr)
     {
@@ -151,26 +151,26 @@ static inline uint_fast64_t round_to_nearest_page_up(uint_fast64_t v)
     return v;
 }
 
-void* lin_jallocator_save_state(lin_jallocator* allocator)
+void* lin_allocator_save_state(lin_allocator* allocator)
 {
-    const lin_jallocator* const this = (lin_jallocator*)allocator;
+    const lin_allocator* const this = (lin_allocator*)allocator;
     return this->current;
 }
 
-void lin_jallocator_restore_current(lin_jallocator* allocator, void* ptr)
+void lin_allocator_restore_current(lin_allocator* allocator, void* ptr)
 {
-    lin_jallocator* const this = (lin_jallocator*)allocator;
+    lin_allocator* const this = (lin_allocator*)allocator;
     assert(ptr >= this->base && ptr < this->max);
     this->current = ptr;
 }
 
-static uint_fast64_t lin_jallocator_get_size(const lin_jallocator* lin_jallocator)
+static uint_fast64_t lin_allocator_get_size(const lin_allocator* lin_allocator)
 {
-    return lin_jallocator->max - lin_jallocator->base;
+    return lin_allocator->max - lin_allocator->base;
 }
 
 
-lin_jallocator* lin_jallocator_create(uint_fast64_t total_size)
+lin_allocator* lin_allocator_create(uint_fast64_t total_size)
 {
     if (!PAGE_SIZE)
     {
@@ -183,7 +183,7 @@ lin_jallocator* lin_jallocator_create(uint_fast64_t total_size)
 #endif
     }
     total_size = round_to_nearest_page_up(total_size);
-    lin_jallocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(lin_jallocator) + total_size), PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
+    lin_allocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(lin_allocator) + total_size), PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
     if (this == MAP_FAILED) return NULL;
     this->base = (void*)((uintptr_t)this + sizeof(*this));
     this->current = (void*)((uintptr_t)this + sizeof(*this));
