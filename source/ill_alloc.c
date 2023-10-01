@@ -3,12 +3,12 @@
 //
 
 #include "include/jmem/ill_alloc.h"
+#include <assert.h>
+#include <string.h>
 #ifndef _WIN32
 #include <sys/mman.h>
 #include <unistd.h>
 #include <stddef.h>
-#include <assert.h>
-#include <string.h>
 
 #else
 #include <windows.h>
@@ -96,17 +96,25 @@ void ill_allocator_destroy(ill_allocator* allocator)
 #ifndef _WIN32
         munmap(this->pools[i].base, this->pool_size);
 #else
-        WINBOOL res = VirtualFree(allocator->pools[i].base, 0, MEM_RELEASE);
+        BOOL res = VirtualFree(allocator->pools[i].base, 0, MEM_RELEASE);
         assert(res != 0);
 #endif
     }
     for (uint_fast64_t i = 0; i < this->count; ++i)
     {
-        this->pools[i] = (mem_pool){};
+        this->pools[i] = (mem_pool){0};
     }
+#ifndef _WIN32
     munmap(this->pools, this->pool_buffer_size);
-    *this = (ill_allocator){};
+#else
+    VirtualFree(this->pools, 0, MEM_RELEASE);
+#endif
+    *this = (ill_allocator){0};
+#ifndef _WIN32
     munmap(this, round_to_nearest_page_up(sizeof(*this)));
+#else
+    VirtualFree(this, 0, MEM_RELEASE);
+#endif
 }
 
 static inline uint_fast64_t round_up_size(uint_fast64_t size)
@@ -205,7 +213,7 @@ beginning_of_fn:
         for (mem_chunk* current = pool->smallest; current; current = current->next)
         {
             //  Check if the current directly follows chunk
-            if (((void*)chunk) + chunk->size == (void*)current)
+            if (((uintptr_t)chunk) + chunk->size == (uintptr_t)current)
             {
                 //  Pull the current from the pool
                 remove_chunk_from_pool(pool, current);
@@ -215,7 +223,7 @@ beginning_of_fn:
             }
 
             //  Check if the current directly precedes chunk
-            if (((void*)current) + current->size == (void*)chunk)
+            if (((uintptr_t)current) + current->size == (uintptr_t)chunk)
             {
                 //  Pull the current from the pool
                 remove_chunk_from_pool(pool, current);
@@ -272,7 +280,7 @@ static inline mem_pool* find_chunk_pool(ill_allocator* allocator, void* ptr)
     for (uint_fast32_t i = 0; i < allocator->count; ++i)
     {
         mem_pool* pool = allocator->pools + i;
-        if (pool->base <= ptr && pool->base + (pool->used + pool->free) > ptr)
+        if (pool->base <= ptr && (uintptr_t)pool->base + (pool->used + pool->free) > (uintptr_t)ptr)
         {
             return pool;
         }
@@ -295,6 +303,7 @@ void* ill_alloc(ill_allocator* allocator, uint_fast64_t size)
         if (this->count == this->capacity)
         {
             uint_fast64_t new_memory_size = this->pool_buffer_size + PAGE_SIZE;
+#ifndef _WIN32
             mem_pool* new_ptr = mremap(this->pools, this->pool_buffer_size, new_memory_size, MREMAP_MAYMOVE);
             if (new_ptr == MAP_FAILED)
             {
@@ -309,6 +318,18 @@ void* ill_alloc(ill_allocator* allocator, uint_fast64_t size)
                 }
                 munmap(this->pools, this->pool_buffer_size);
             }
+#else
+            mem_pool* new_ptr = VirtualAlloc(NULL, new_memory_size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+            if (new_ptr == NULL)
+            {
+                return NULL;
+            }
+            for (uint_fast64_t i = 0; i < this->count; ++i)
+            {
+                new_ptr[i] = this->pools[i];
+            }
+            VirtualFree(this->pools, 0, MEM_RELEASE);
+#endif
             memset((void*)((uintptr_t)new_ptr + this->pool_buffer_size), 0, PAGE_SIZE);
             this->pool_buffer_size = new_memory_size;
             this->pools = new_ptr;
@@ -355,7 +376,7 @@ void* ill_alloc(ill_allocator* allocator, uint_fast64_t size)
     uint_fast64_t remaining = chunk->size - size;
     if (remaining >= sizeof(mem_chunk))
     {
-        mem_chunk* new_chunk = ((void*)chunk) + size;
+        mem_chunk* new_chunk = (void*)(((uintptr_t)chunk) + size);
         new_chunk->used = 0;
         new_chunk->size = remaining;
         chunk->size = size;
@@ -404,7 +425,7 @@ void ill_jfree(ill_allocator* allocator, void* ptr)
     if (!ptr) return;
     //  Check what pool this is from
     mem_pool* pool = find_chunk_pool(this, ptr);
-    mem_chunk* chunk = ptr - offsetof(mem_chunk, next);
+    mem_chunk* chunk = (void*)((uintptr_t)ptr - offsetof(mem_chunk, next));
 #ifdef JMEM_ALLOC_TRACKING
     this->current_allocated -= chunk->size;
 #endif
@@ -440,7 +461,7 @@ void* ill_jrealloc(ill_allocator* allocator, void* ptr, uint_fast64_t new_size)
 
 
 
-    mem_chunk* chunk = ptr - offsetof(mem_chunk, next);
+    mem_chunk* chunk = (void*)((uintptr_t)ptr - offsetof(mem_chunk, next));
     //  Try and find pool it came from
     mem_pool* pool = find_chunk_pool(this, ptr);
     //  Check if it came from a pool
@@ -468,9 +489,9 @@ void* ill_jrealloc(ill_allocator* allocator, void* ptr, uint_fast64_t new_size)
         //  Increasing
         //  Check if current block can be expanded so that there's no moving it
         //  Location of potential candidate
-        mem_chunk* possible_chunk = ((void*)chunk) + chunk->size;
+        mem_chunk* possible_chunk = (void*)(((uintptr_t)chunk) + chunk->size);
         if (!((void*)possible_chunk >= pool->base                              //  Is the pointer in range?
-            && (void*)possible_chunk < pool->base + pool->free + pool->used //  Is the pointer in range?
+            && (uintptr_t)possible_chunk < (uintptr_t)pool->base + pool->free + pool->used //  Is the pointer in range?
             && possible_chunk->used == 0                                         //  Is the other chunk in use
             && possible_chunk->size + chunk->size >= new_size))               //  Is the other chunk large enough to accommodate us
         {
@@ -502,7 +523,7 @@ void* ill_jrealloc(ill_allocator* allocator, void* ptr, uint_fast64_t new_size)
             return ptr;
         }
         //  Split the chunk
-        mem_chunk* new_chunk = ((void*)chunk) + new_size;
+        mem_chunk* new_chunk = (void*)(((uintptr_t)chunk) + new_size);
         chunk->size = new_size;
         new_chunk->size = remainder;
         new_chunk->used = 0;
@@ -570,11 +591,11 @@ int ill_allocator_verify(ill_allocator* allocator, int_fast32_t* i_pool, int_fas
         accounted_free_space = 0;
         j = 0;
         //  Do a full walk through the whole block
-        for (void* current = pool->base; current < pool->base + this->pool_size; current += ((mem_chunk*)current)->size, j -= 1)
+        for (void* current = pool->base; (uintptr_t)current < (uintptr_t)pool->base + this->pool_size; current = (void*)((uintptr_t)current + ((mem_chunk*)current)->size), j -= 1)
         {
             mem_chunk* chunk = current;
             VERIFICATION_CHECK(chunk->size >= sizeof(mem_chunk));
-            VERIFICATION_CHECK(current < pool->base + this->pool_size);
+            VERIFICATION_CHECK((uintptr_t)current < (uintptr_t)pool->base + this->pool_size);
             if (chunk->used)
             {
                 accounted_used_space += chunk->size;
@@ -693,7 +714,7 @@ ill_allocator* ill_allocator_create(uint_fast64_t pool_size, uint_fast64_t initi
 #else
         SYSTEM_INFO sys_info;
         GetSystemInfo(&sys_info);
-        PG_SIZE = (long) sys_info.dwPageSize;
+        PAGE_SIZE = (long) sys_info.dwPageSize;
 #endif
         //  Check that we have the page size
         if (!PAGE_SIZE)
@@ -701,21 +722,38 @@ ill_allocator* ill_allocator_create(uint_fast64_t pool_size, uint_fast64_t initi
             return NULL;
         }
     }
+#ifndef _WIN32
     ill_allocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(*this)), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
     if (this == MAP_FAILED)
     {
         return NULL;
     }
-    *this = (ill_allocator){};
+#else
+    ill_allocator* this = VirtualAlloc(NULL, round_to_nearest_page_up(sizeof(*this)), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+    if (this == NULL)
+    {
+        return NULL;
+    }
+#endif
+    *this = (ill_allocator){0};
     this->capacity = initial_pool_count < 32 ? 32 : initial_pool_count;
     this->pool_buffer_size = round_to_nearest_page_up(this->capacity * sizeof(*this->pools));
     this->capacity = this->pool_buffer_size / sizeof(*this->pools);
+#ifndef _WIN32
     this->pools = mmap(0, this->pool_buffer_size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-    if (!this->pools)
+    if (this->pools == MAP_FAILED)
     {
         munmap(this, round_to_nearest_page_up(sizeof(*this)));
         return NULL;
     }
+#else
+    this->pools = VirtualAlloc(NULL, this->pool_buffer_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+    if (this->pools == NULL)
+    {
+        VirtualFree(this, 0, MEM_RELEASE);
+        return NULL;
+    }
+#endif
 
     this->pool_size = round_to_nearest_page_up(pool_size);
     for (uint_fast32_t i = 0; i < initial_pool_count; ++i)
@@ -734,12 +772,17 @@ ill_allocator* ill_allocator_create(uint_fast64_t pool_size, uint_fast64_t initi
 #ifndef _WIN32
                 munmap(this->pools[i].base, pool_size);
 #else
-                WINBOOL res = VirtualFree(this->pools[i].base, 0, MEM_RELEASE);
+                BOOL res = VirtualFree(this->pools[i].base, 0, MEM_RELEASE);
                 assert(res != 0);
 #endif
             }
+#ifndef _WIN32
             munmap(this->pools, this->pool_buffer_size);
             munmap(this, round_to_nearest_page_up(sizeof(*this)));
+#else
+            VirtualFree(this->pools, 0, MEM_RELEASE);
+            VirtualFree(this, 0, MEM_RELEASE);
+#endif
             return NULL;
         }
         p->size = this->pool_size;

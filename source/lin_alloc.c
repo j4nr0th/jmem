@@ -6,11 +6,11 @@
 #include "include/jmem/lin_alloc.h"
 #include <string.h>
 #include <assert.h>
-#include <unistd.h>
 #ifndef _WIN32
+#include <unistd.h>
 #include <sys/mman.h>
 #else
-#include <windows.h>
+#include <Windows.h>
 #endif
 
 static const char* const LIN_ALLOC_NAME_STRING = "linear lin_allocator";
@@ -28,11 +28,11 @@ struct lin_allocator_struct
 void lin_allocator_destroy(lin_allocator* allocator)
 {
     lin_allocator* this = (lin_allocator*)allocator;
-    const uint_fast64_t ret_v = this->peek - this->base;
+//    const uint_fast64_t ret_v = this->peek - this->base;
 #ifndef _WIN32
     munmap(this, sizeof(*this) + this->max - this->base);
 #else
-    WINBOOL res = VirtualFree(this, 0, MEM_RELEASE);
+    BOOL res = VirtualFree(this, 0, MEM_RELEASE);
     assert(res != 0);
 #endif
 //    return ret_v;
@@ -47,7 +47,7 @@ void* lin_alloc(lin_allocator* allocator, uint_fast64_t size)
     lin_allocator* this = (lin_allocator*)allocator;
     //  Get current allocator position and find new bottom
     void* ret = this->current;
-    void* new_bottom = ret + size;
+    void* new_bottom = (void*)((uintptr_t)ret + size);
     //  Check if it overflows
     if (new_bottom > this->max)
     {
@@ -75,7 +75,7 @@ void lin_jfree(lin_allocator* allocator, void* ptr)
         if (this->current > ptr)
         {
 #ifndef NDEBUG
-        memset(ptr, 0xCC, this->current - ptr);
+        memset(ptr, 0xCC, (uintptr_t)this->current - (uintptr_t)ptr);
 #endif
             this->current = ptr;
         }
@@ -102,7 +102,7 @@ void* lin_jrealloc(lin_allocator* allocator, void* ptr, uint_fast64_t new_size)
     if (this->base <= ptr && this->max > ptr)
     {
         //  Check for overflow
-        void* new_bottom = new_size + ptr;
+        void* new_bottom = (void*)(new_size + (uintptr_t)ptr);
         if (new_bottom > this->max)
         {
 //            //  Overflow would happen, so use malloc
@@ -119,11 +119,11 @@ void* lin_jrealloc(lin_allocator* allocator, void* ptr, uint_fast64_t new_size)
 #ifndef NDEBUG
         if (new_bottom > this->current)
         {
-          memset(this->current, 0xCC, new_bottom - this->current);
+          memset(this->current, 0xCC, (uintptr_t)new_bottom - (uintptr_t)this->current);
         }
         else if (new_bottom < this->current)
         {
-            memset(new_bottom, 0xCC, this->current - new_bottom);
+            memset(new_bottom, 0xCC, (uintptr_t)this->current - (uintptr_t)new_bottom);
         }
 #endif
         this->current = new_bottom;
@@ -166,7 +166,7 @@ void lin_allocator_restore_current(lin_allocator* allocator, void* ptr)
 
 static uint_fast64_t lin_allocator_get_size(const lin_allocator* lin_allocator)
 {
-    return lin_allocator->max - lin_allocator->base;
+    return (uint_fast64_t)lin_allocator->max - (uint_fast64_t)lin_allocator->base;
 }
 
 
@@ -179,12 +179,20 @@ lin_allocator* lin_allocator_create(uint_fast64_t total_size)
 #else
         SYSTEM_INFO sys_info;
         GetSystemInfo(&sys_info);
-        uint64_t PAGE_SIZE = sys_info.dwPageSize;
+        PAGE_SIZE = sys_info.dwPageSize;
 #endif
     }
     total_size = round_to_nearest_page_up(total_size);
+#ifndef _WIN32
     lin_allocator* this = mmap(NULL, round_to_nearest_page_up(sizeof(lin_allocator) + total_size), PROT_READ|PROT_WRITE, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
     if (this == MAP_FAILED) return NULL;
+#else
+    lin_allocator* this = VirtualAlloc(0, round_to_nearest_page_up(sizeof(lin_allocator) + total_size), MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+    if (this == NULL)
+    {
+        return NULL;
+    }
+#endif
     this->base = (void*)((uintptr_t)this + sizeof(*this));
     this->current = (void*)((uintptr_t)this + sizeof(*this));
     this->peek = (void*)((uintptr_t)this + sizeof(*this));

@@ -2,7 +2,6 @@
 // Created by jan on 23.4.2023.
 //
 #include "../include/jmem/ill_alloc.h"
-#include <unistd.h>
 #include <assert.h>
 #include <string.h>
 
@@ -10,7 +9,7 @@ typedef uint32_t u32;
 
 int main()
 {
-    void* pointer_array[1024] = {};
+    void* pointer_array[1024] = {0};
     ill_allocator* allocator = ill_allocator_create(64, 1);
     assert(allocator);
     for (u32 i = 0; i < 1024; ++i)
