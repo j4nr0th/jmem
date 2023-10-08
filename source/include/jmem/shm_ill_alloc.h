@@ -10,6 +10,13 @@
 #include <stdint.h>
 
 
+/**
+ *  Shared memory allocator, which maps using mmap shared memory pages, allowing it to be shared among several
+ *  sub-processes (like across a fork or clone call). While the allocator memory can be shared, its capabilities
+ *  are still limited. Since it uses mmap, it means that any allocations or deallocations of pools in one process will
+ *  not be visible in another. This may be fixed by changing the implementation to use shm_open/shm_close, though
+ *  that would likely make it much slower.
+ */
 typedef struct shm_ill_allocator_struct shm_ill_allocator;
 /**
  * Creates a new memory allocator with a specified pools size and creates it with a specified number of memory pools

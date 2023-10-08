@@ -5,11 +5,16 @@
 #include <assert.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <linux/sched.h>
+#include <sched.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <stdio.h>
+#include <errno.h>
 
 typedef uint32_t u32;
 
-void* test_fn(void* param)
+static void* test_fn(void* param)
 {
     shm_ill_allocator* const allocator = param;
     void* pointer_array[1024] = {0};
@@ -49,7 +54,7 @@ void* test_fn(void* param)
     for (u32 i = 0; i < 512; ++i)
     {
         assert(shm_ill_allocator_verify(allocator, NULL, NULL) == 0);
-        void* ptr = shm_ill_jrealloc(allocator, pointer_array[2 * i + 1], 96); //   add breakpoint at i == 64
+        void* ptr = shm_ill_jrealloc(allocator, pointer_array[2 * i + 1], 96);
         assert(shm_ill_allocator_verify(allocator, NULL, NULL) == 0);
         assert(ptr);
         memset(ptr, 0xCC, 96);
@@ -147,20 +152,48 @@ int main()
 
     allocator = shm_ill_allocator_create(1024, 32);
     assert(allocator);
-    enum {THREAD_COUNT = 8};
-    pthread_t thread_handles[THREAD_COUNT];
-    for (unsigned i = 0; i < THREAD_COUNT; ++i)
+    int* const p_end = shm_ill_alloc(allocator, sizeof(*p_end));
+    assert(p_end);
+    *p_end = 0;
+    pid_t parent_tid;
+    pid_t child;
+    struct clone_args cl_args =
+            {
+            //  Allocate a new stack
+            .stack = 0,
+            .stack_size = 0,
+            .parent_tid = (__u64)&parent_tid,
+            .child_tid = (__u64)&child,
+            //            .set_tid = (__u64) &tid,
+//            .set_tid_size = sizeof(tid),
+            .flags = CLONE_FILES|CLONE_FS|CLONE_IO|CLONE_SYSVSEM|CLONE_PARENT_SETTID|CLONE_CHILD_SETTID,
+            };
+    long child_tid = 0;
+    child_tid = syscall(
+            SYS_clone3,
+            &cl_args,
+            sizeof(cl_args));
+    if (child_tid == -1 || errno)
     {
-        const int create = pthread_create(thread_handles + i, NULL, test_fn, allocator);
-        assert(create == 0);
+        perror("Could not clone!");
     }
-
-    for (unsigned i = 0; i < THREAD_COUNT; ++i)
+    assert(child_tid >= 0);
+    printf("Thread is %d - %d, %d, %ld\nAllocator address: %p\n", gettid(), parent_tid, child, child_tid, allocator);
+    if (child_tid == 0)
     {
-        const int join = pthread_join(thread_handles[i], NULL);
-        assert(join == 0);
+        printf("Child running\n");
+        test_fn(allocator);
+        printf("Child closed\n");
+        *p_end = 1;
+        //  Child
+        return 0;
     }
-
+    else
+    {
+        printf("Parent running\n");
+        while (*p_end == 0) sched_yield();
+        (void) child_tid;
+    }
     shm_ill_allocator_destroy(allocator);
     allocator = NULL;
 

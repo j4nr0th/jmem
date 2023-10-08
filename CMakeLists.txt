@@ -20,6 +20,9 @@ add_test(NAME lin_alloc COMMAND lin_alloc_test)
 add_executable(shm_ill_alloc_full_test source/tests/shm_ill_alloc_test.c source/shm_ill_alloc.c source/include/jmem/shm_ill_alloc.h)
 add_test(NAME shm_ill_alloc COMMAND shm_ill_alloc_full_test)
 
-add_executable(shm_ill_alloc_full_test_fork source/tests/shm_ill_alloc_test_fork.c source/shm_ill_alloc.c source/include/jmem/shm_ill_alloc.h)
-add_test(NAME shm_ill_alloc_fork COMMAND shm_ill_alloc_full_test_fork)
+add_executable(shm_ill_alloc_full_test_thrd source/tests/shm_ill_alloc_test_thrd.c source/shm_ill_alloc.c source/include/jmem/shm_ill_alloc.h)
+add_test(NAME shm_ill_alloc_thrd COMMAND shm_ill_alloc_full_test_thrd)
+
+add_executable(shm_ill_alloc_full_test_clone source/tests/shm_ill_alloc_test_clone.c source/shm_ill_alloc.c source/include/jmem/shm_ill_alloc.h)
+add_test(NAME shm_ill_alloc_clone COMMAND shm_ill_alloc_full_test_clone)
 

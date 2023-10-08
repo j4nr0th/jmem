@@ -6,4 +6,5 @@
 #define JMEM_JMEM_H
 #include "ill_alloc.h"
 #include "lin_alloc.h"
+#include "shm_ill_alloc.h"
 #endif //JMEM_JMEM_H
